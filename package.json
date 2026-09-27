@@ -1,0 +1,50 @@
+{
+  "name": "subplug",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Monitor other opencode sessions and subagents, overlaid with the coordination/ claim registry.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tfisatypedef/subplug.git"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "agents",
+    "monitoring",
+    "coordination"
+  ],
+  "engines": {
+    "opencode": ">=1.18 <2"
+  },
+  "exports": {
+    "./server": {
+      "import": "./src/server/index.ts",
+      "types": "./src/server/index.ts"
+    },
+    "./tui": {
+      "import": "./src/tui/index.tsx",
+      "types": "./src/tui/index.tsx"
+    }
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "harness": "bun run scripts/dev-harness.ts"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "1.18.32",
+    "@opentui/core": "0.5.12",
+    "@opentui/keymap": "0.5.12",
+    "@opentui/solid": "0.5.12",
+    "solid-js": "1.9.12"
+  },
+  "devDependencies": {
+    "@opencode-ai/sdk": "1.18.32",
+    "@types/bun": "1.3.14",
+    "@types/node": "24.12.2",
+    "typescript": "5.8.2"
+  }
+}
