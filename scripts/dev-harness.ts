@@ -346,6 +346,20 @@ function seedDemoHub(hubDir: string): void {
     summary: "2 uncovered staged path(s) for git-commit",
     refs: { category: "git-commit", uncovered: 2, detail: "docs/notes.md: no active claim" },
   })
+  push({
+    ts: now - 10_000,
+    serverID,
+    sessionID: childID,
+    kind: "comms.sent",
+    summary: "please re-run the claim coverage check",
+    refs: {
+      msgID: "msg_demo_inbox_0001",
+      to: childID,
+      from: harnessIdentity,
+      kind: "message",
+      delivery: "queue",
+    },
+  })
 }
 
 async function runDemo(): Promise<void> {

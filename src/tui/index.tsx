@@ -7,6 +7,7 @@ import { createEffect, createSignal, onCleanup } from "solid-js"
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule, TuiSlotPlugin } from "@opencode-ai/plugin/tui"
 import type { ClaimRecord, MonitorState, SessionNode } from "../shared/types.ts"
 import { joinClaimsToSessions, lastCommandBySession, readMonitorState, type LastCommand } from "../hub/monitor.ts"
+import { inboxFor } from "../hub/comms.ts"
 import { buildSessionTree, flattenTree, rollupSubtree, type SubtreeRollup, type TreeRow } from "../hub/tree.ts"
 import {
   buildTranscriptRows,
@@ -556,6 +557,7 @@ function Dashboard(props: {
   command: string
   onClose: () => void
   openSession: (sessionID: string) => void
+  compose: (sessionID: string, status: SessionNode["status"]) => void
 }) {
   const snapshot = () => props.state()
   const skin = () => skinOf(props.api)
@@ -597,6 +599,7 @@ function Dashboard(props: {
     "subplug.collapse": "left",
     "subplug.expand": ["right", "space"],
     "subplug.open.selected": "return",
+    "subplug.compose": "m",
     "subplug.dashboard.back": ["escape", "q"],
   }
   const keys = createBindingLookup(routeKeys)
@@ -614,6 +617,15 @@ function Dashboard(props: {
         run: () => open(),
       },
       {
+        name: "subplug.compose",
+        title: "Subplug: message session",
+        category: "Plugin",
+        run: () => {
+          const row = rows()[current()]
+          if (row) props.compose(row.session.sessionID, row.session.status)
+        },
+      },
+      {
         name: "subplug.dashboard.back",
         title: "Subplug: close dashboard",
         category: "Plugin",
@@ -626,6 +638,7 @@ function Dashboard(props: {
       "subplug.collapse",
       "subplug.expand",
       "subplug.open.selected",
+      "subplug.compose",
       "subplug.dashboard.back",
     ]),
   })
@@ -731,8 +744,8 @@ function Dashboard(props: {
         </box>
 
         <text fg={skin().muted}>
-          ↑/↓ select · ←/→ collapse · enter open · esc/q back · /{props.route} reopens · {props.command} from the
-          palette
+          ↑/↓ select · ←/→ collapse · enter open · m message · esc/q back · /{props.route} reopens · {props.command}{" "}
+          from the palette
         </text>
       </box>
     </box>
@@ -746,6 +759,7 @@ function SessionDetail(props: {
   trail: () => string[]
   descend: (sessionID: string) => void
   back: () => void
+  compose: (sessionID: string, status: SessionNode["status"]) => void
   intervalMs: number
 }) {
   const skin = () => skinOf(props.api)
@@ -764,6 +778,7 @@ function SessionDetail(props: {
     if (!identity) return []
     return props.state().registry.claims.filter((claim) => claim.status === "active" && claim.agent === identity)
   }
+  const inbox = () => inboxFor(props.state().comms, props.sessionID(), { now: props.state().generatedAt })
   const [childIndex, setChildIndex] = createSignal(0)
   const currentChild = () => Math.min(childIndex(), Math.max(0, children().length - 1))
   const moveChild = (delta: number) => {
@@ -824,6 +839,7 @@ function SessionDetail(props: {
     "subplug.detail.descend": "return",
     "subplug.detail.scroll.up": "pageup",
     "subplug.detail.scroll.down": "pagedown",
+    "subplug.detail.compose": "m",
     "subplug.back": ["escape", "q"],
   }
   const keys = createBindingLookup(detailKeys)
@@ -846,6 +862,12 @@ function SessionDetail(props: {
         run: () => setScroll(Math.max(0, scroll() - TRANSCRIPT_WINDOW)),
       },
       {
+        name: "subplug.detail.compose",
+        title: "Subplug: message session",
+        category: "Plugin",
+        run: () => props.compose(props.sessionID(), session()?.status ?? "unknown"),
+      },
+      {
         name: "subplug.back",
         title: "Subplug: back",
         category: "Plugin",
@@ -858,6 +880,7 @@ function SessionDetail(props: {
       "subplug.detail.descend",
       "subplug.detail.scroll.up",
       "subplug.detail.scroll.down",
+      "subplug.detail.compose",
       "subplug.back",
     ]),
   })
@@ -984,6 +1007,29 @@ function SessionDetail(props: {
           </box>
         ) : null}
 
+        {inbox().length ? (
+          <box
+            border
+            borderColor={skin().border}
+            flexDirection="column"
+            paddingLeft={1}
+            paddingRight={1}
+            paddingTop={1}
+            paddingBottom={1}
+            gap={1}
+          >
+            <text fg={skin().accent}>
+              <b>Inbox ({inbox().length} pending)</b>
+            </text>
+            {inbox().map((pointer) => (
+              <text fg={skin().text}>
+                <span style={{ fg: skin().muted }}>{pointer.msgID.slice(-8)}</span> {pointer.from}{" "}
+                {age(pointer.ts, props.state().generatedAt)} ago: {pointer.summary}
+              </text>
+            ))}
+          </box>
+        ) : null}
+
         <box
           border
           borderColor={skin().border}
@@ -1056,6 +1102,73 @@ const tui: TuiPlugin = async (api, options) => {
     closeDashboard()
   }
 
+  const { DialogConfirm, DialogPrompt } = api.ui
+  const promptTarget = async (sessionID: string, text: string, noReply: boolean): Promise<void> => {
+    try {
+      const client = api.client as unknown as {
+        session: {
+          prompt: (input: {
+            sessionID: string
+            noReply?: boolean
+            parts: Array<{ type: "text"; text: string }>
+          }) => Promise<unknown>
+        }
+      }
+      await client.session.prompt({ sessionID, noReply, parts: [{ type: "text", text }] })
+      api.ui.toast({
+        variant: "success",
+        title: "subplug",
+        message: `${noReply ? "queued" : "sent"} to ${shortID(sessionID)}`,
+        duration: 3000,
+      })
+    } catch (error) {
+      api.ui.toast({
+        variant: "error",
+        title: "subplug",
+        message: `send failed: ${String(error).slice(0, 80)}`,
+        duration: 5000,
+      })
+    }
+  }
+  const openComposer = (sessionID: string, noReply: boolean): void => {
+    api.ui.dialog.replace(
+      () => (
+        <DialogPrompt
+          title={`message ${shortID(sessionID)}${noReply ? " (queued)" : ""}`}
+          placeholder="message"
+          onConfirm={(value: string) => {
+            api.ui.dialog.clear()
+            const text = value.trim()
+            if (text) void promptTarget(sessionID, text, noReply)
+          }}
+          onCancel={() => api.ui.dialog.clear()}
+        />
+      ),
+      () => undefined,
+    )
+  }
+  const compose = (sessionID: string, status: SessionNode["status"]): void => {
+    if (!sessionID) return
+    if (status === "idle") {
+      openComposer(sessionID, false)
+      return
+    }
+    api.ui.dialog.replace(
+      () => (
+        <DialogConfirm
+          title={`target is ${status}`}
+          message="Queue this message for the next step boundary? It can interleave with in-flight work."
+          onConfirm={() => {
+            api.ui.dialog.clear()
+            openComposer(sessionID, true)
+          }}
+          onCancel={() => api.ui.dialog.clear()}
+        />
+      ),
+      () => undefined,
+    )
+  }
+
   try {
     const markerDir = join(cfg.storageDir ?? api.state.path.state, "subplug")
     mkdirSync(markerDir, { recursive: true })
@@ -1078,6 +1191,7 @@ const tui: TuiPlugin = async (api, options) => {
           command={cfg.command}
           onClose={closeDashboard}
           openSession={openSession}
+          compose={compose}
         />
       ),
     },
@@ -1093,6 +1207,7 @@ const tui: TuiPlugin = async (api, options) => {
           trail={() => detailTrail()}
           descend={descendSession}
           back={backFromDetail}
+          compose={compose}
           intervalMs={cfg.intervalMs}
         />
       ),
