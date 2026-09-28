@@ -17,7 +17,8 @@
     "coordination"
   ],
   "engines": {
-    "opencode": ">=1.18 <2"
+    "opencode": ">=1.18 <2",
+    "bun": ">=1.3"
   },
   "exports": {
     "./server": {

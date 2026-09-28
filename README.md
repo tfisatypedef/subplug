@@ -81,6 +81,7 @@ Path plugins must default-export an object with `id` plus either `server` or
 | `coord.injectIdentity` | `false` | Set `COORD_AGENT_ID` via `shell.env` for coordination-enabled repos: roots share `<name>@<host>`; subagents get a unique `<name>@<host>/<sessionID8>`. |
 | `comms.inject` | `true` | Append pending inbox notices as one synthetic part on the recipient's next turn (strict no-op when the inbox is empty); `false` disables. |
 | `storageDir` | opencode state dir | Override the hub root (also `SUBPLUG_STORAGE_DIR`). |
+| `hubGroup` | project id | Override the hub key so multiple clones/windows can share one hub (combine with a shared `storageDir`; also `SUBPLUG_HUB_GROUP`). |
 | `retentionBytes` | 4 MiB | Rotate `events.<server>.jsonl` at this size (one `.1` segment kept). |
 | `maxAgeMs` | 24 h | Ignore records older than this when folding. |
 | `intervalMs` (TUI) | 1000 | Hub poll interval. |
@@ -106,9 +107,12 @@ staged paths are not covered by the session's claims is recorded as a
 `command.risk` event (read-only check; nothing is ever blocked) and surfaced as
 a TUI toast.
 
-Hub layout: `<stateDir>/subplug/<projectID>/events.<serverID>.jsonl` plus a
-folded `snapshot.json`. Multiple servers append to separate files; readers fold
-all of them, so other windows/clones can be aggregated later.
+Hub layout: `<stateDir>/subplug/<hubKey>/events.<serverID>.jsonl` plus a folded
+`snapshot.json`, where `<hubKey>` is the project id unless `hubGroup` is set.
+Multiple servers append to separate files and every reader folds all of them,
+so several opencode windows on the same project aggregate automatically. To
+aggregate different clones, point them at the same `storageDir` and set the same
+`hubGroup`.
 
 The server plugin also registers a `swarm_status` tool that returns the session
 tree plus active claims, conflicts, and the last passing verification. `format`

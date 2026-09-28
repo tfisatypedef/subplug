@@ -3,13 +3,15 @@
 An opencode plugin that lets a session monitor the other sessions and subagents
 working on a project, overlaid with the `coordination/` claim registry.
 
-Status: **P0–P4 complete; P5 (session comms) implemented**. Server tap, session
-fold, coord bridge, `swarm_status` (text/json/tree + inbox pull), `swarm_send`,
-queue-only inbox-notice injection, `shell.env` identity injection, TUI
-sidebar/route/toasts, the nested session tree with collapse/rollups, the
-store-backed transcript, session cost folding, and the TUI composer/inbox are in
-place. Remaining: live `task`-subagent observation and visual TUI checks (see
-"Implementation status"), then P6 (cross-process aggregation and packaging).
+Status: **P0–P5 complete; P6 (cross-process + portability) partially
+implemented**. Server tap, session fold, coord bridge, `swarm_status`
+(text/json/tree + inbox pull), `swarm_send`, queue-only inbox-notice injection,
+`shell.env` identity injection, TUI sidebar/route/toasts, the nested session
+tree with collapse/rollups, the store-backed transcript, session cost folding,
+the TUI composer/inbox, a timeout-guarded state-dir fallback, and a shared-hub
+`hubGroup` are in place. Remaining: live `task`-subagent observation and visual
+TUI checks (see "Implementation status"), the optional web view, and final
+packaging (publish decision).
 
 ## Locked decisions
 
@@ -137,6 +139,8 @@ subplug/
   session and a `comms.sent` pointer; a reply is pullable via `swarm_status`;
   injection is a no-op with an empty inbox; harness probes pass (see below).
 - **P6+ — cross-process.** Aggregate multiple clones/windows; optional web view.
+  Partial: windows on the same project share a hub automatically; clones
+  aggregate via a shared `storageDir` + `hubGroup`; the web view is not started.
 
 ## Risks
 
@@ -391,6 +395,7 @@ logic; the harness only proves hooks fire and pointers land.
 | P4 viewing implementation | done | `test/tree.test.ts` + `test/transcript.test.ts` pure helpers; cost fold in `test/hub.test.ts`/`test/server.test.ts`; TUI tree/rollups/transcript + `swarm_status format=tree`; `--tui` load; visual check user-run |
 | P5 comms implementation | done | `test/comms.test.ts` pure helpers; `swarm_send` + inbox-pull tests in `test/server.test.ts`; injection `--probe-inject`; TUI composer/inbox `--tui` load; visual check user-run |
 | Probe: injection part persistence + `comms.delivered` | done | `--probe-inject` (see results) |
+| P6 cross-process + portability | partial | state-dir timeout guard + hang test; multi-server fold test; `hubGroup` in server + TUI; CI (`.github/workflows/ci.yml`), `.gitattributes`, LICENSE, `bun.lock`, engines already present; web view not started |
 
 ## Handoff prompt for a fresh window
 
@@ -400,14 +405,16 @@ logic; the harness only proves hooks fire and pointers land.
 > `swarm_status inbox: true` pull with `comms.seen`; inbox-notice injection in
 > `chat.message` (`comms.inject`, in-memory comms fold, dedupe/TTL/byte caps,
 > marks `comms.delivered`); and the TUI `m` composer plus the detail Inbox
-> panel. Automated gate: `bun install; bun run typecheck; bun test` (77 pass);
+> panel. Automated gate: `bun install; bun run typecheck; bun test` (80 pass);
 > `bun run scripts/dev-harness.ts`; `bun run scripts/dev-harness.ts --tui`;
 > `--probe-comms`; `--probe-tui-state`; `--probe-inject`. The user still runs
 > the README manual checks: `--demo --keep` + `opencode` for the visual
 > tree/collapse/rollups/transcript/inbox/composer check and a real `task`
-> prompt + `--inspect`. Next is P6 (cross-process aggregation plus
-> portability/packaging: own GitHub repo, LICENSE, `bun.lock`, `.gitattributes`,
-> dual-platform README, engines, CI, `resolveStateDir` retry/fallback fix).
+> prompt + `--inspect`. P6 is partially implemented: `resolveStateDir` is
+> timeout-guarded (hang test), the hub folds multiple server logs (test), and
+> `hubGroup` (server + TUI, `SUBPLUG_HUB_GROUP`) lets clones share a hub via a
+> shared `storageDir`; CI, `.gitattributes`, LICENSE, `bun.lock`, and engines
+> already exist. Remaining P6: the optional web view and the publish decision.
 > Keep using the flat client for v1 sessions (never the v2 `/api/session`
 > store), read transcripts from `api.state.session.messages()`/`part()` when
 > the store has content, keep `client.path.get()` out of eager plugin init, and
