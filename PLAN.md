@@ -3,12 +3,13 @@
 An opencode plugin that lets a session monitor the other sessions and subagents
 working on a project, overlaid with the `coordination/` claim registry.
 
-Status: **P0 complete; P1/P2/P3 core implemented and load-verified**. Server tap,
-session fold, coord bridge, `swarm_status` tool, `shell.env` identity injection,
-and the TUI sidebar/route/toasts are in place. Remaining: live `task`-subagent
-observation and visual TUI checks (see "Implementation status"). **P4 (viewing
-subagents) and P5 (session comms) are scoped below; both harness probes have
-run and their results are recorded.**
+Status: **P0 complete; P1/P2/P3 core implemented and load-verified; P4 (viewing
+subagents) implemented**. Server tap, session fold, coord bridge, `swarm_status`
+(text/json/tree), `shell.env` identity injection, TUI sidebar/route/toasts, the
+nested session tree with collapse/rollups, the store-backed transcript, and
+session cost folding are in place. Remaining: live `task`-subagent observation
+and visual TUI checks (see "Implementation status"), then **P5 (session comms)**,
+scoped below with its harness probe results already recorded.
 
 ## Locked decisions
 
@@ -85,7 +86,7 @@ subplug/
   src/coord/             # claims reader/fold/conflicts, glob, repo discovery
   src/shared/            # normalized records, redaction
   scripts/dev-harness.ts # scratch config + seeded repo; headless server + TUI checks
-  test/                  # bun test: coord, hub, redact
+  test/                  # bun test: coord, hub, redact, tree, transcript, server
   PLAN.md README.md
 ```
 
@@ -364,32 +365,31 @@ logic; the harness only proves hooks fire and pointers land.
 | Harness robustness (random port, stale kill, retry, XDG isolation) | done | baseline spike stable; zombie cause documented |
 | Probe: busy-session admission + v1/v2 store split | done | `--probe-comms` (see results) |
 | Probe: plugin store coverage for subagents | done | `--probe-tui-state` (see results) |
-| P4 viewing implementation | pending | plan in "P4 scope" |
+| P4 viewing implementation | done | `test/tree.test.ts` + `test/transcript.test.ts` pure helpers; cost fold in `test/hub.test.ts`/`test/server.test.ts`; TUI tree/rollups/transcript + `swarm_status format=tree`; `--tui` load; visual check user-run |
 | P5 comms implementation | pending | plan in "P5 scope" |
 
 ## Handoff prompt for a fresh window
 
-> Read PLAN.md. P0 and the P1/P2/P3 implementation are complete, including
-> unique subagent identities, the claim↔session join, the commit coverage risk
-> toast, baseline session import, and the `swarm_status` session detail. The TUI
-> has a dashboard with selection and a `subplug.session` detail route
-> (metadata/todos/usage/conversation). Automated gate: `bun install;
-> bun run typecheck; bun test; bun run scripts/dev-harness.ts;
-> bun run scripts/dev-harness.ts --tui`. The TUI's `api.client.session` is the
-> v2 flat-param client (`{ sessionID }`, not `{ path: { id } }`); use
-> `api.client.session.messages/todo/children` for detail data, and import the
-> TUI module directly (`bun -e 'await import(...)'`) to sanity-check module
-> load. The user then runs the manual checks from the README: `--demo --keep` +
-> `opencode` for the visual TUI, `--poke-risk` for the toast, and a real `task`
-> prompt + `--inspect` for live parent/child records. P4 (viewing subagents) and
-> P5 (session comms) are scoped in "P4/P5 design"; both probes have run and
-> their results are recorded there. Use the flat client
-> (`api.client.session.messages/todo/children/prompt`) for v1 sessions, not the
-> v2 `/api/session` store, and read transcripts from
-> `api.state.session.messages()/part()` when the session has content. Keep
-> `client.path.get()` out of eager plugin init, and keep any inbox fetch off the
-> model-request critical path unless memoized and timeout-guarded. Harness
-> gotcha: always use a fresh/random port and kill stale listeners; a zombie
-> serve silently answers with stale code. Portability/packaging (own GitHub
-> repo, LICENSE, `bun.lock`, `.gitattributes`, dual-platform README, engines,
-> CI, `resolveStateDir` retry/fallback fix) remains P6.
+> Read PLAN.md. P0-P3 are complete and P4 (viewing subagents) is implemented
+> and committed: pure `src/hub/tree.ts` + `src/shared/transcript.ts` helpers
+> with unit tests; session cost + `recentCommands` folded into the hub; the
+> nested TUI tree with `api.kv` collapse, orphan/deleted markers, last-command
+> age, and subtree rollups; the store-backed live transcript (full parts,
+> `api.state.part()` verified for subagent sessions, pgup/pgdn scroll,
+> max-input context %, summed cost); `swarm_status format=tree`. Automated
+> gate: `bun install; bun run typecheck; bun test` (59 pass);
+> `bun run scripts/dev-harness.ts`; `bun run scripts/dev-harness.ts --tui`;
+> `bun run scripts/dev-harness.ts --probe-tui-state`. The user still runs the
+> manual checks from the README: `--demo --keep` + `opencode` for the visual
+> tree/collapse/rollup/transcript check and a real `task` prompt + `--inspect`.
+> Next is P5 (session comms), scoped in "P5 scope" with both probes already run.
+> Use the flat client (`api.client.session.messages/todo/children/prompt`) for
+> v1 sessions, not the v2 `/api/session` store; read transcripts from
+> `api.state.session.messages()` + `api.state.part()` when the store has
+> content, falling back to the flat client. Keep `client.path.get()` out of
+> eager plugin init, and keep any inbox fetch off the model-request critical
+> path unless memoized and timeout-guarded. Harness gotcha: always use a
+> fresh/random port and kill stale listeners; a zombie serve silently answers
+> with stale code. Portability/packaging (own GitHub repo, LICENSE,
+> `bun.lock`, `.gitattributes`, dual-platform README, engines, CI,
+> `resolveStateDir` retry/fallback fix) remains P6.

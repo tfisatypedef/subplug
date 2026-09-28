@@ -87,10 +87,10 @@ Path plugins must default-export an object with `id` plus either `server` or
 ## What gets recorded
 
 Metadata only. Session lifecycle (created/updated/deleted/status/idle/error),
-agent and model per session, the injected `session.identity`, todo counts, and
-bash command summaries that are categorized (`git-commit`, `git-push`, `coord`,
-`plant`, `test`) and redacted for tokens, secrets, and URL credentials. No
-message bodies, no file contents.
+agent and model per session, the injected `session.identity`, running cost
+snapshots, todo counts, and bash command summaries that are categorized
+(`git-commit`, `git-push`, `coord`, `plant`, `test`) and redacted for tokens,
+secrets, and URL credentials. No message bodies, no file contents.
 
 At startup the server imports the project's existing sessions (metadata only,
 bounded by `maxAgeMs`) so restored sessions appear before they emit new events.
@@ -106,25 +106,33 @@ all of them, so other windows/clones can be aggregated later.
 
 The server plugin also registers a read-only `swarm_status` tool that returns
 the session tree plus active claims, conflicts, and the last passing
-verification (text or JSON). Pass `session` (full id or unique prefix) for one
-session's detail, and `messages` (count) to include recent message excerpts.
-Message excerpts are read live and are never written to the hub.
+verification. `format` accepts `text` (default), `json`, or `tree`; the tree
+format nests children under parents, marks orphans/deleted sessions, and prints
+a per-root subtree rollup (sessions, busy/retry/error, cost). Pass `session`
+(full id or unique prefix) for one session's detail, and `messages` (count) to
+include recent message excerpts. Message excerpts are read live and are never
+written to the hub.
 
 ## TUI
 
 - Sidebar slot **Agents** (order 650, below the internal blocks): the last 8
   sessions, status marks, the current session marker, and the active-claim
   count.
-- Dashboard route `subplug`: all sessions with status/agent/model/age and the
-  claim list with expiry, batons, conflicts, and the session each claim is
-  joined to (`⇄ <session>`). Open with the `/subplug` command or `ctrl+alt+a`.
-  Arrow keys select a session; Enter opens the detail view; `esc`/`q` returns to
-  the view you came from.
-- Detail route `subplug.session`: metadata, todos, subagents, joined claims,
-  token/context usage (from the last assistant message and the provider model
-  limit), and the last messages with tool calls. `esc`/`q` returns to the
-  dashboard. Conversation is fetched live over the SDK and never stored in the
-  hub.
+- Dashboard route `subplug`: a nested session tree (parent/child by depth) with
+  status/agent/model/age, the last bash command and its age, orphan (`?`) and
+  deleted markers, and a per-root subtree rollup (subagent count, busy/error
+  counts, cost). Collapse state is kept in the TUI KV store. The claim list
+  shows expiry, batons, conflicts, and the session each claim is joined to
+  (`⇄ <session>`). Open with the `/subplug` command or `ctrl+alt+a`. `↑`/`↓`
+  selects, `←`/`→` collapses/expands, Enter opens the detail view, `esc`/`q`
+  returns to the view you came from.
+- Detail route `subplug.session`: breadcrumb, metadata, subtree rollup, todos,
+  selectable subagents (Enter descends; `esc` pops back), joined claims, and a
+  store-backed live transcript with full parts: text, folded reasoning, tool
+  calls with status/title/elapsed/output tail, and file/patch rows. `pgup`/
+  `pgdn` scroll the transcript; usage shows context from the max assistant
+  input plus summed cost. Transcripts are read from the TUI session store when
+  present, falling back to the live SDK, and are never written to the hub.
 - Toasts plus attention sounds on `session.error`, subagent completion, and
   uncovered-commit risk.
 
@@ -167,9 +175,12 @@ conflict, and a stale risk. In the TUI:
 
 - the sidebar **Agents** slot (bottom) lists both sessions and the active-claim
   count;
-- `/subplug` opens the dashboard: sessions with status/agent/model/age, the
-  subagent nested under its parent, claims with `⇄ <session>` for the joined
-  holder, and conflict coloring;
+- `/subplug` opens the dashboard: the subagent nested under its parent (with
+  collapse via `←`/`→`), per-root subtree rollups, claims with `⇄ <session>` for
+  the joined holder, and conflict coloring;
+- Enter opens the subagent's detail: breadcrumb, rolled-up subtree cost/counts,
+  and a live transcript (tool status/title/output tail) that updates while the
+  demo subagent runs;
 - in a second terminal run `bun run scripts/dev-harness.ts --poke-risk` to
   append a live risk and confirm the warning toast + attention sound.
 
