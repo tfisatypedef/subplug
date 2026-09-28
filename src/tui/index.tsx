@@ -515,7 +515,7 @@ function createMonitor(api: TuiPluginApi, cfg: Cfg) {
   return state
 }
 
-function Sidebar(props: { state: () => MonitorState; sessionID: string }) {
+export function Sidebar(props: { state: () => MonitorState; sessionID: string; onOpen: () => void }) {
   const snapshot = () => props.state()
   return (
     <box
@@ -527,6 +527,7 @@ function Sidebar(props: { state: () => MonitorState; sessionID: string }) {
       paddingBottom={1}
       flexDirection="column"
       gap={1}
+      onMouseDown={() => props.onOpen()}
     >
       <text fg={"#5f87ff"}>
         <b>Agents</b>
@@ -548,11 +549,12 @@ function Sidebar(props: { state: () => MonitorState; sessionID: string }) {
           ? ` · ${snapshot().registry.conflicts.length} conflict${snapshot().registry.conflicts.length === 1 ? "" : "s"}`
           : ""}
       </text>
+      <text fg={"#5f87ff"}>click or ctrl+alt+a / /subplug to open</text>
     </box>
   )
 }
 
-function Dashboard(props: {
+export function Dashboard(props: {
   api: TuiPluginApi
   state: () => MonitorState
   route: string
@@ -650,6 +652,7 @@ function Dashboard(props: {
     <box width="100%" height="100%" backgroundColor={skin().panel} flexDirection="column">
       <box
         flexDirection="column"
+        alignItems="stretch"
         width="100%"
         height="100%"
         paddingTop={1}
@@ -658,7 +661,7 @@ function Dashboard(props: {
         paddingRight={2}
         gap={1}
       >
-        <box flexDirection="row" justifyContent="space-between">
+        <box flexDirection="row" justifyContent="space-between" width="100%">
           <text fg={skin().text}>
             <b>subplug</b>
             <span style={{ fg: skin().muted }}> swarm dashboard</span>
@@ -671,6 +674,7 @@ function Dashboard(props: {
           border
           borderColor={skin().border}
           flexDirection="column"
+          width="100%"
           paddingLeft={1}
           paddingRight={1}
           paddingTop={1}
@@ -713,6 +717,7 @@ function Dashboard(props: {
           border
           borderColor={skin().border}
           flexDirection="column"
+          width="100%"
           paddingLeft={1}
           paddingRight={1}
           paddingTop={1}
@@ -754,7 +759,7 @@ function Dashboard(props: {
   )
 }
 
-function SessionDetail(props: {
+export function SessionDetail(props: {
   api: TuiPluginApi
   state: () => MonitorState
   sessionID: () => string
@@ -906,6 +911,7 @@ function SessionDetail(props: {
     <box width="100%" height="100%" backgroundColor={skin().panel} flexDirection="column">
       <box
         flexDirection="column"
+        alignItems="stretch"
         width="100%"
         height="100%"
         paddingTop={1}
@@ -914,7 +920,7 @@ function SessionDetail(props: {
         paddingRight={2}
         gap={1}
       >
-        <box flexDirection="row" justifyContent="space-between">
+        <box flexDirection="row" justifyContent="space-between" width="100%">
           <text fg={skin().text}>
             <b>subplug</b>
             <span style={{ fg: skin().muted }}> session detail</span>
@@ -939,6 +945,7 @@ function SessionDetail(props: {
           border
           borderColor={skin().border}
           flexDirection="column"
+          width="100%"
           paddingLeft={1}
           paddingRight={1}
           paddingTop={1}
@@ -966,6 +973,7 @@ function SessionDetail(props: {
             border
             borderColor={skin().border}
             flexDirection="column"
+            width="100%"
             paddingLeft={1}
             paddingRight={1}
             paddingTop={1}
@@ -991,6 +999,7 @@ function SessionDetail(props: {
             border
             borderColor={skin().border}
             flexDirection="column"
+            width="100%"
             paddingLeft={1}
             paddingRight={1}
             paddingTop={1}
@@ -1014,6 +1023,7 @@ function SessionDetail(props: {
             border
             borderColor={skin().border}
             flexDirection="column"
+            width="100%"
             paddingLeft={1}
             paddingRight={1}
             paddingTop={1}
@@ -1036,6 +1046,8 @@ function SessionDetail(props: {
           border
           borderColor={skin().border}
           flexDirection="column"
+          width="100%"
+          overflow="hidden"
           paddingLeft={1}
           paddingRight={1}
           paddingTop={1}
@@ -1043,7 +1055,7 @@ function SessionDetail(props: {
           gap={1}
           flexGrow={1}
         >
-          <box flexDirection="row" justifyContent="space-between">
+          <box flexDirection="row" justifyContent="space-between" width="100%">
             <text fg={skin().accent}>
               <b>Conversation ({detail().rows.length} rows)</b>
             </text>
@@ -1081,6 +1093,11 @@ const tui: TuiPlugin = async (api, options) => {
       return
     }
     api.route.navigate(previous.name, previous.params)
+  }
+
+  const openDashboard = () => {
+    setPreviousRoute(api.route.current)
+    api.route.navigate(cfg.route)
   }
 
   const [detailTrail, setDetailTrail] = createSignal<string[]>([])
@@ -1226,8 +1243,7 @@ const tui: TuiPlugin = async (api, options) => {
         namespace: "palette",
         slashName: "subplug",
         run() {
-          setPreviousRoute(api.route.current)
-          api.route.navigate(cfg.route)
+          openDashboard()
         },
       },
     ],
@@ -1238,7 +1254,7 @@ const tui: TuiPlugin = async (api, options) => {
     order: 650,
     slots: {
       sidebar_content(ctx, value) {
-        return <Sidebar state={state} sessionID={value.session_id} />
+        return <Sidebar state={state} sessionID={value.session_id} onOpen={openDashboard} />
       },
     },
   }
