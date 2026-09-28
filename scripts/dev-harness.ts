@@ -13,13 +13,17 @@ const harnessDir = join(root, ".harness")
 const repoDir = join(harnessDir, "repo")
 const configDir = join(harnessDir, "config")
 const stateDir = join(harnessDir, "state")
-const port = Number(process.env.SUBPLUG_HARNESS_PORT ?? 4599)
+const port = process.env.SUBPLUG_HARNESS_PORT
+  ? Number(process.env.SUBPLUG_HARNESS_PORT)
+  : 4100 + Math.floor(Math.random() * 900)
 const base = `http://127.0.0.1:${port}`
 const keep = process.argv.includes("--keep")
 const tuiOnly = process.argv.includes("--tui")
 const demoMode = process.argv.includes("--demo")
 const pokeRisk = process.argv.includes("--poke-risk")
 const inspectMode = process.argv.includes("--inspect")
+const probeComms = process.argv.includes("--probe-comms")
+const probeTuiState = process.argv.includes("--probe-tui-state")
 const verbose = process.argv.includes("--verbose")
 
 const serverEntry = join(root, "src", "server", "index.ts").replace(/\\/g, "/")
@@ -90,7 +94,7 @@ function seedConflictingClaim(): void {
   writeFileSync(join(repoDir, "coordination", "claims", "other.jsonl"), `${JSON.stringify(claim)}\n`)
 }
 
-function writeConfig(): void {
+function writeConfig(extraTuiPlugins: Array<[string, Record<string, unknown>]> = []): void {
   mkdirSync(configDir, { recursive: true })
   const config = {
     $schema: "https://opencode.ai/config.json",
@@ -106,7 +110,7 @@ function writeConfig(): void {
   writeFileSync(join(configDir, "opencode.json"), JSON.stringify(config, null, 2))
   const tuiConfig = {
     $schema: "https://opencode.ai/tui.json",
-    plugin: [[tuiEntry, { enabled: true, storageDir: stateDir }]],
+    plugin: [[tuiEntry, { enabled: true, storageDir: stateDir }], ...extraTuiPlugins],
   }
   writeFileSync(join(configDir, "tui.json"), JSON.stringify(tuiConfig, null, 2))
 }
@@ -200,8 +204,63 @@ function stop(child: ChildProcess): void {
   if (!child.pid) return
   if (process.platform === "win32") {
     spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" })
-  } else {
+    return
+  }
+  try {
+    process.kill(-child.pid, "SIGTERM")
+  } catch {
     child.kill("SIGTERM")
+  }
+  setTimeout(() => {
+    try {
+      process.kill(-child.pid!, "SIGKILL")
+    } catch {
+      try {
+        child.kill("SIGKILL")
+      } catch {
+        // already gone
+      }
+    }
+  }, 2000).unref()
+}
+
+function killStaleServer(): void {
+  if (process.platform === "win32") return
+  const listing = spawnSync("ss", ["-ltnp"], { encoding: "utf8" }).stdout ?? ""
+  const line = listing.split(/\r?\n/).find((entry) => entry.includes(`:${port} `))
+  const pid = line ? /pid=(\d+)/.exec(line)?.[1] : undefined
+  if (pid) {
+    log(`killing stale listener on port ${port} (pid ${pid})`)
+    spawnSync("kill", ["-9", pid])
+  }
+}
+
+async function startServerUntilReady(attempts = 3): Promise<{ child: ChildProcess; output: () => string }> {
+  let last: { child: ChildProcess; output: () => string } | undefined
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    killStaleServer()
+    last = spawnServer("INFO")
+    try {
+      const paths = await waitForServer(45_000)
+      log(`server ready (attempt ${attempt}): ${JSON.stringify(paths)}`)
+      return last
+    } catch (error) {
+      log(`server attempt ${attempt} failed: ${String(error)}`)
+      stop(last.child)
+      await sleep(1500)
+    }
+  }
+  throw new Error("server did not become ready after retries")
+}
+
+function harnessEnv(extra: Record<string, string> = {}): Record<string, string | undefined> {
+  return {
+    ...process.env,
+    XDG_STATE_HOME: join(harnessDir, "xdg", "state"),
+    XDG_DATA_HOME: join(harnessDir, "xdg", "data"),
+    XDG_CACHE_HOME: join(harnessDir, "xdg", "cache"),
+    OPENCODE_CONFIG_DIR: configDir,
+    ...extra,
   }
 }
 
@@ -209,9 +268,10 @@ function spawnServer(logLevel: string): { child: ChildProcess; output: () => str
   const bin = resolveOpencodeBin()
   const child = spawn(bin, ["serve", "--port", String(port), "--print-logs", "--log-level", logLevel], {
     cwd: repoDir,
-    env: { ...process.env, OPENCODE_CONFIG_DIR: configDir },
+    env: harnessEnv(),
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
+    detached: process.platform !== "win32",
   })
   let output = ""
   child.stdout?.on("data", (chunk: Buffer) => {
@@ -365,9 +425,10 @@ async function runTuiCheck(): Promise<void> {
   const bin = resolveOpencodeBin()
   const child = spawn(bin, [repoDir, "--print-logs", "--log-level", "INFO"], {
     cwd: repoDir,
-    env: { ...process.env, OPENCODE_CONFIG_DIR: configDir },
+    env: harnessEnv(),
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
+    detached: process.platform !== "win32",
   })
   let output = ""
   child.stdout?.on("data", (chunk: Buffer) => {
@@ -393,6 +454,165 @@ async function runTuiCheck(): Promise<void> {
   process.exit(1)
 }
 
+type ProbeSession = { id?: string }
+
+async function createProbeSession(body: Record<string, unknown>): Promise<string> {
+  const response = await fetch(`${base}/session`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
+  })
+  if (!response.ok) throw new Error(`POST /session -> HTTP ${response.status}: ${await response.text()}`)
+  const session = (await response.json()) as ProbeSession
+  if (!session.id) throw new Error("POST /session returned no id")
+  return session.id
+}
+
+async function probeJson(url: string): Promise<unknown> {
+  const response = await fetch(url, { signal: AbortSignal.timeout(15_000) })
+  if (!response.ok) throw new Error(`${url} -> HTTP ${response.status}`)
+  return response.json()
+}
+
+async function runProbeComms(): Promise<void> {
+  seedRepo()
+  writeConfig()
+  rmSync(stateDir, { recursive: true, force: true })
+
+  let server: ChildProcess | undefined
+  let output = () => ""
+  const failures: string[] = []
+
+  try {
+    const started = await startServerUntilReady()
+    server = started.child
+    output = started.output
+    const rootID = await createProbeSession({ title: "probe root" })
+    const childID = await createProbeSession({ parentID: rootID, title: "probe child" })
+    log(`probe sessions: root=${rootID} child=${childID}`)
+
+    const startedAt = Date.now()
+    const shellPromise = fetch(`${base}/session/${childID}/shell`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent: "build", command: "sleep 6; echo PROBE_SHELL_DONE" }),
+      signal: AbortSignal.timeout(60_000),
+    }).then(async (response) => ({ status: response.status, text: await response.text() }))
+    await sleep(1500)
+
+    try {
+      const statuses = (await probeJson(`${base}/session/status`)) as Record<string, { type?: string }>
+      log(`child status mid-shell: ${statuses[childID]?.type ?? "(missing)"}`)
+    } catch (error) {
+      log(`status probe failed: ${String(error)}`)
+    }
+
+    const v1At = Date.now() - startedAt
+    const v1Response = await fetch(`${base}/session/${childID}/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ noReply: true, parts: [{ type: "text", text: "PROBE_V1_NO_REPLY" }] }),
+      signal: AbortSignal.timeout(30_000),
+    })
+    const v1Text = await v1Response.text()
+    log(`v1 noReply at +${v1At}ms: HTTP ${v1Response.status} ${v1Text.slice(0, 200)}`)
+    if (!v1Response.ok) failures.push(`v1 noReply failed: HTTP ${v1Response.status}`)
+
+    let v2Report = "not-run"
+    try {
+      const v2Response = await fetch(`${base}/api/session/${childID}/prompt`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prompt: { text: "PROBE_V2_QUEUE" }, delivery: "queue" }),
+        signal: AbortSignal.timeout(30_000),
+      })
+      v2Report = `HTTP ${v2Response.status} ${(await v2Response.text()).slice(0, 220)}`
+    } catch (error) {
+      v2Report = `error ${String(error)}`
+    }
+    log(`v2 queue prompt on v1 session at +${Date.now() - startedAt}ms: ${v2Report}`)
+
+    const shellResult = await shellPromise
+    log(`shell done at +${Date.now() - startedAt}ms: HTTP ${shellResult.status}`)
+    if (!shellResult.text.includes("PROBE_SHELL_DONE")) {
+      failures.push("shell output did not contain PROBE_SHELL_DONE")
+    }
+
+    await sleep(1000)
+    const messages = (await probeJson(`${base}/session/${childID}/message`)) as Array<{
+      info?: { role?: string }
+      parts?: Array<{ type?: string; text?: string }>
+    }>
+    const texts = messages.flatMap((row) => row.parts ?? []).map((part) => part.text ?? "")
+    log(`child messages: ${messages.length} roles=[${messages.map((row) => row.info?.role ?? "?").join(",")}]`)
+    log(`v1 message present: ${texts.some((text) => text.includes("PROBE_V1_NO_REPLY"))}`)
+    log(`v2 message present: ${texts.some((text) => text.includes("PROBE_V2_QUEUE"))}`)
+
+    try {
+      const contextResponse = await fetch(`${base}/api/session/${childID}/context`, {
+        signal: AbortSignal.timeout(15_000),
+      })
+      log(`v2 context read: HTTP ${contextResponse.status} ${(await contextResponse.text()).slice(0, 220)}`)
+    } catch (error) {
+      log(`v2 context read failed: ${String(error)}`)
+    }
+  } catch (error) {
+    failures.push(String(error))
+    process.stderr.write(output().slice(-4000))
+  } finally {
+    if (server) stop(server)
+    await sleep(500)
+    if (!keep) rmSync(harnessDir, { recursive: true, force: true })
+  }
+
+  if (failures.length) {
+    log(`PROBE FAILED: ${failures.join("; ")}`)
+    process.exit(1)
+  }
+  log("comms probe complete")
+}
+
+async function runTuiStateProbe(): Promise<void> {
+  seedRepo()
+  const probeEntry = join(root, "scripts", "probe-tui-state.ts").replace(/\\/g, "/")
+  writeConfig([[probeEntry, {}]])
+  rmSync(stateDir, { recursive: true, force: true })
+
+  const probeDir = join(stateDir, "probe")
+  const bin = resolveOpencodeBin()
+  const child = spawn(bin, [repoDir, "--print-logs", "--log-level", "INFO"], {
+    cwd: repoDir,
+    env: harnessEnv({ SUBPLUG_PROBE_DIR: probeDir }),
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+    detached: process.platform !== "win32",
+  })
+  let output = ""
+  child.stdout?.on("data", (chunk: Buffer) => {
+    output += chunk.toString()
+  })
+  child.stderr?.on("data", (chunk: Buffer) => {
+    output += chunk.toString()
+  })
+
+  const marker = join(probeDir, "tui-state-probe.json")
+  const done = await waitFor(() => existsSync(marker), 90_000, "tui state probe marker")
+  stop(child)
+  await sleep(500)
+
+  if (done) {
+    log(`TUI state probe: ${readFileSync(marker, "utf8").trim()}`)
+    if (!keep) rmSync(harnessDir, { recursive: true, force: true })
+    log("TUI state probe OK")
+    return
+  }
+
+  process.stderr.write(output.slice(-4000))
+  log("TUI state probe marker was not written")
+  process.exit(1)
+}
+
 async function runSpike(): Promise<void> {
   seedRepo()
   writeConfig()
@@ -404,11 +624,15 @@ async function runSpike(): Promise<void> {
   log(`config: ${configDir}`)
   log(`state: ${stateDir}`)
 
-  const { child, output } = spawnServer("INFO")
+  let server: ChildProcess | undefined
+  let output = () => ""
   const failures: string[] = []
 
   try {
-    const paths = await waitForServer(120_000)
+    const started = await startServerUntilReady()
+    server = started.child
+    output = started.output
+    const paths = await probeJson(`${base}/path`)
     log(`server ready: ${JSON.stringify(paths)}`)
 
     const dirs = hubRoots()
@@ -562,7 +786,7 @@ async function runSpike(): Promise<void> {
     failures.push(String(error))
     process.stderr.write(output().slice(-4000))
   } finally {
-    stop(child)
+    if (server) stop(server)
     await sleep(500)
     if (!keep) rmSync(harnessDir, { recursive: true, force: true })
   }
@@ -589,6 +813,14 @@ async function main(): Promise<void> {
   }
   if (tuiOnly) {
     await runTuiCheck()
+    return
+  }
+  if (probeComms) {
+    await runProbeComms()
+    return
+  }
+  if (probeTuiState) {
+    await runTuiStateProbe()
     return
   }
   await runSpike()
