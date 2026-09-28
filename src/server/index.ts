@@ -102,13 +102,37 @@ function resolveOptions(options?: Record<string, unknown>): SubplugOptions {
 }
 
 const STATE_DIR_ATTEMPTS = 3
+const STATE_DIR_TIMEOUT_MS = 1500
 const STATE_DIR_RETRY_MS = 150
+
+function stateDirTimeoutMs(): number {
+  return toNumber(process.env.SUBPLUG_STATE_DIR_TIMEOUT_MS) ?? STATE_DIR_TIMEOUT_MS
+}
+
+function withTimeout<Value>(promise: Promise<Value>, ms: number): Promise<Value> {
+  return new Promise<Value>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error: unknown) => {
+        clearTimeout(timer)
+        reject(error)
+      },
+    )
+  })
+}
 
 async function resolveStateDir(input: PluginInput, override?: string): Promise<string> {
   if (override) return override
   for (let attempt = 0; attempt < STATE_DIR_ATTEMPTS; attempt += 1) {
     try {
-      const response = (await input.client.path.get()) as unknown as { data?: { state?: string }; state?: string }
+      const response = (await withTimeout(input.client.path.get(), stateDirTimeoutMs())) as unknown as {
+        data?: { state?: string }
+        state?: string
+      }
       const data = response?.data ?? response
       if (data && typeof data.state === "string" && data.state) return data.state
     } catch {

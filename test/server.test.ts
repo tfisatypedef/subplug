@@ -95,6 +95,7 @@ async function startPlugin(
   stateDir: string,
   options: {
     pathGetFailures?: number
+    pathGetHangs?: boolean
     stateFromClient?: boolean
     sessions?: FakeSession[]
     statuses?: Record<string, { type: string }>
@@ -109,6 +110,7 @@ async function startPlugin(
     client: {
       path: {
         get: async () => {
+          if (options.pathGetHangs) return new Promise<never>(() => undefined)
           if (remainingFailures > 0) {
             remainingFailures -= 1
             throw new Error("server not ready")
@@ -209,6 +211,32 @@ describe("server plugin state dir", () => {
     )
 
     expect(hubEvents(stateDir).length).toBeGreaterThan(0)
+  })
+
+  test("falls back when path.get hangs", async () => {
+    const previousXdg = process.env.XDG_STATE_HOME
+    const previousTimeout = process.env.SUBPLUG_STATE_DIR_TIMEOUT_MS
+    const xdg = tempDir("xdg-")
+    process.env.XDG_STATE_HOME = xdg
+    process.env.SUBPLUG_STATE_DIR_TIMEOUT_MS = "50"
+    try {
+      const repo = seedRepo([])
+      const unused = tempDir("unused-")
+      const hooks = await startPlugin(repo, unused, { pathGetHangs: true, stateFromClient: true })
+
+      await hooks["tool.execute.before"]?.(
+        { tool: "bash", sessionID: "ses_hang000000001", callID: "call-hang" },
+        { args: { command: "ls -la" } },
+      )
+
+      expect(readEventRecords(hubRoot(fallbackStateDir(), PROJECT_ID)).length).toBeGreaterThan(0)
+      expect(hubEvents(unused).length).toBe(0)
+    } finally {
+      if (previousXdg === undefined) delete process.env.XDG_STATE_HOME
+      else process.env.XDG_STATE_HOME = previousXdg
+      if (previousTimeout === undefined) delete process.env.SUBPLUG_STATE_DIR_TIMEOUT_MS
+      else process.env.SUBPLUG_STATE_DIR_TIMEOUT_MS = previousTimeout
+    }
   })
 
   test("falls back to the XDG state dir when path.get keeps failing", async () => {
