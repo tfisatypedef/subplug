@@ -72,6 +72,7 @@ function emptyState(): MonitorState {
     sessions: [],
     risks: [],
     recentCommands: [],
+    comms: [],
     registry: { claims: [], verifications: [], conflicts: [], errors: [] },
   }
 }

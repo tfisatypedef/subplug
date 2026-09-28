@@ -16,6 +16,9 @@ export type EventKind =
   | "command.risk"
   | "tool"
   | "registry"
+  | "comms.sent"
+  | "comms.delivered"
+  | "comms.seen"
 
 export type EventRefs = Record<string, string | number | boolean | null>
 
@@ -109,11 +112,27 @@ export type RiskRecord = {
   summary: string
 }
 
+export type CommsState = "sent" | "delivered" | "seen"
+
+export type CommsPointer = {
+  msgID: string
+  from: string
+  to: string
+  kind: string
+  delivery: string
+  state: CommsState
+  ts: number
+  at?: number
+  summary: string
+  serverID: string
+}
+
 export type MonitorState = {
   generatedAt: number
   hubDir: string
   sessions: SessionNode[]
   risks: RiskRecord[]
   recentCommands: EventRecord[]
+  comms: CommsPointer[]
   registry: RegistryState
 }

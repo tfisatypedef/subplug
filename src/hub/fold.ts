@@ -85,6 +85,11 @@ export function applyRecord(nodes: Map<string, SessionNode>, record: EventRecord
       node.errorAt = ts
       return
     }
+    case "comms.sent":
+    case "comms.delivered":
+    case "comms.seen": {
+      return
+    }
     default: {
       if (!sessionID) return
       const node = ensure(nodes, sessionID, ts, record.serverID)

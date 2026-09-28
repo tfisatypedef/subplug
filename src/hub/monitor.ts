@@ -1,11 +1,13 @@
 import type { ClaimRecord, EventRecord, MonitorState, RegistryState, RiskRecord, SessionNode } from "../shared/types.ts"
 import { buildRegistryState } from "../coord/claims.ts"
 import { readEventRecords } from "./append.ts"
+import { foldComms } from "./comms.ts"
 import { foldSessions } from "./fold.ts"
 
 export const DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000
 export const MAX_RISKS = 20
 export const MAX_COMMANDS = 20
+export const MAX_COMMS = 50
 
 export type LastCommand = {
   ts: number
@@ -59,6 +61,7 @@ export function readMonitorState(
     sessions: foldSessions(records),
     risks: toRisks(records),
     recentCommands: records.filter((record) => record.kind === "command").slice(-MAX_COMMANDS),
+    comms: foldComms(records).slice(-MAX_COMMS),
     registry,
   }
 }

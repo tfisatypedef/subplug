@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { EventLog, readEventRecords } from "../src/hub/append.ts"
 import { foldSessions, sessionDepth } from "../src/hub/fold.ts"
+import { inboxFor } from "../src/hub/comms.ts"
 import { agentIdentity } from "../src/hub/identity.ts"
 import { joinClaimsToSessions, lastCommandBySession, readMonitorState } from "../src/hub/monitor.ts"
 import { fallbackStateDir, hubRoot } from "../src/hub/paths.ts"
@@ -219,6 +220,32 @@ describe("readMonitorState", () => {
       const joined = joinClaimsToSessions(state.registry, state.sessions)
       expect(joined.length).toBe(1)
       expect(joined[0]?.session?.sessionID).toBe("ses_1")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("folds comms pointers into the monitor state", () => {
+    const root = tempDir()
+    try {
+      const hubDir = hubRoot(root, "proj")
+      const base = Date.parse("2026-09-27T11:00:00Z")
+      const log = new EventLog(hubDir, "srv1")
+      log.append(record({ ts: base, kind: "session.created", sessionID: "ses_to" }))
+      log.append(
+        record({
+          ts: base + 1,
+          kind: "comms.sent",
+          sessionID: "ses_to",
+          summary: "ping",
+          refs: { msgID: "m1", to: "ses_to", from: "a@host" },
+        }),
+      )
+
+      const state = readMonitorState(hubDir, root, { now: base + 1000 })
+      expect(state.comms.length).toBe(1)
+      expect(state.comms[0]?.state).toBe("sent")
+      expect(inboxFor(state.comms, "ses_to", { now: base + 1000 }).length).toBe(1)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
