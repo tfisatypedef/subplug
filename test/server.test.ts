@@ -430,4 +430,38 @@ describe("server plugin swarm_status detail", () => {
     const result = await tool.execute({ session: "ses_missing" }, { directory: repo, worktree: repo })
     expect(result.output).toContain("no session matching")
   })
+
+  test("renders the session tree with rollups and orphan markers", async () => {
+    const repo = seedRepo([])
+    const stateDir = tempDir("state-")
+    const hooks = await startPlugin(repo, stateDir)
+    const onEvent = hooks.event as unknown as (input: { event: unknown }) => Promise<void>
+
+    await onEvent({
+      event: { type: "session.created", properties: { info: { id: "ses_treeroot00001", title: "tree root", directory: repo } } },
+    })
+    await onEvent({
+      event: {
+        type: "session.created",
+        properties: { info: { id: "ses_treechild001", title: "tree child", parentID: "ses_treeroot00001", directory: repo } },
+      },
+    })
+    await onEvent({
+      event: { type: "session.status", properties: { sessionID: "ses_treechild001", status: { type: "busy" } } },
+    })
+    await onEvent({
+      event: { type: "session.created", properties: { info: { id: "ses_treeorphan01", title: "tree orphan", parentID: "ses_gone000000001", directory: repo } } },
+    })
+
+    const tool = swarmTool(hooks)
+    const result = await tool.execute({ format: "tree" }, { directory: repo, worktree: repo })
+
+    expect(result.output).toContain("tree root")
+    expect(result.output).toContain("└ ")
+    expect(result.output).toContain("tree child")
+    expect(result.output).toContain("subtree")
+    expect(result.output).toContain("1 busy")
+    expect(result.output).toContain("tree orphan")
+    expect(result.output).toContain("orphan")
+  })
 })

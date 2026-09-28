@@ -8,6 +8,7 @@ import { EventLog, readEventRecords } from "../hub/append.ts"
 import { applyRecord } from "../hub/fold.ts"
 import { agentIdentity } from "../hub/identity.ts"
 import { readMonitorState } from "../hub/monitor.ts"
+import { buildSessionTree, flattenTree, rollupSubtree } from "../hub/tree.ts"
 import { fallbackStateDir, hubRoot, snapshotFile } from "../hub/paths.ts"
 import { findRepoRoot, isCoordinationEnabled } from "../coord/repo.ts"
 import { buildRegistryState, coverageErrors, readAdoptionPaths } from "../coord/claims.ts"
@@ -666,7 +667,7 @@ const server: Plugin = async (input, options) => {
         description:
           "Read-only swarm status: other opencode sessions/subagents in this project plus coordination claims and conflicts. Pass `session` (full id or unique prefix) for one session's detail, with optional `messages` count to include recent message excerpts.",
         args: {
-          format: tool.schema.enum(["json", "text"]).optional(),
+          format: tool.schema.enum(["json", "text", "tree"]).optional(),
           session: tool.schema.string().optional(),
           messages: tool.schema.number().optional(),
         },
@@ -708,6 +709,13 @@ const server: Plugin = async (input, options) => {
             return {
               title: "subplug swarm_status",
               output: JSON.stringify(state, null, 2),
+              metadata: { sessions: state.sessions.length, claims: state.registry.claims.length },
+            }
+          }
+          if (format === "tree") {
+            return {
+              title: "subplug swarm_status",
+              output: renderStatusTree(state.generatedAt, dir, root, state.sessions, state.registry),
               metadata: { sessions: state.sessions.length, claims: state.registry.claims.length },
             }
           }
@@ -785,6 +793,61 @@ function renderStatus(
   }
   if (registry.errors.length) {
     lines.push(`registry errors: ${registry.errors.length}`)
+  }
+  return lines.join("\n")
+}
+
+function renderStatusTree(
+  generatedAt: number,
+  hubDir: string,
+  repoRoot: string | undefined,
+  sessions: SessionNode[],
+  registry: RegistryState,
+): string {
+  const tree = buildSessionTree(sessions)
+  const rows = flattenTree(tree, new Set())
+  const lines: string[] = []
+  lines.push(`subplug tree @ ${new Date(generatedAt).toISOString()}`)
+  lines.push(`hub: ${hubDir}`)
+  lines.push(`repo: ${repoRoot ?? "(not a git repository)"}`)
+  lines.push(
+    `sessions: ${sessions.length} (roots ${tree.roots.length}, subagents ${sessions.length - tree.roots.length})`,
+  )
+  for (const row of rows) {
+    const session = row.session
+    const indent = row.depth > 0 ? `${"  ".repeat(row.depth - 1)}└ ` : ""
+    const parts: string[] = []
+    if (session.deleted) parts.push("deleted")
+    parts.push(session.status)
+    if (row.orphan) parts.push("orphan")
+    if (session.agent) parts.push(`agent=${session.agent}`)
+    if (session.model) parts.push(`model=${session.model}`)
+    if (typeof session.cost === "number" && session.cost > 0) parts.push(`cost=$${session.cost.toFixed(4)}`)
+    if (session.title) parts.push(`"${session.title.slice(0, 48)}"`)
+    lines.push(`- ${indent}${session.sessionID.slice(0, 12)} ${parts.join(" ")}`)
+  }
+  for (const root of tree.roots) {
+    const rollup = rollupSubtree(sessions, root.session.sessionID)
+    if (rollup.total <= 1 && rollup.cost === 0) continue
+    const summary: string[] = [`${rollup.total} session${rollup.total === 1 ? "" : "s"}`]
+    if (rollup.busy) summary.push(`${rollup.busy} busy`)
+    if (rollup.retry) summary.push(`${rollup.retry} retry`)
+    if (rollup.error) summary.push(`${rollup.error} err`)
+    if (rollup.deleted) summary.push(`${rollup.deleted} deleted`)
+    if (rollup.cost) summary.push(`cost=$${rollup.cost.toFixed(4)}`)
+    lines.push(`subtree ${root.session.sessionID.slice(0, 12)}: ${summary.join(" ")}`)
+  }
+  const active = registry.claims.filter((claim) => claim.status === "active")
+  lines.push(`claims: ${active.length} active of ${registry.claims.length} total`)
+  for (const claim of active) {
+    const baton = claim.scopes.baton ? ` baton=${claim.scopes.baton}` : ""
+    lines.push(`- ${claim.claimID} ${claim.agent} expires=${claim.expires}${baton}`)
+  }
+  if (registry.conflicts.length) {
+    lines.push(`conflicts: ${registry.conflicts.length}`)
+    for (const conflict of registry.conflicts) {
+      lines.push(`- ${conflict.a} / ${conflict.b}: ${conflict.reason}`)
+    }
   }
   return lines.join("\n")
 }
