@@ -3,13 +3,13 @@
 An opencode plugin that lets a session monitor the other sessions and subagents
 working on a project, overlaid with the `coordination/` claim registry.
 
-Status: **P0 complete; P1/P2/P3 core implemented and load-verified; P4 (viewing
-subagents) implemented**. Server tap, session fold, coord bridge, `swarm_status`
-(text/json/tree), `shell.env` identity injection, TUI sidebar/route/toasts, the
-nested session tree with collapse/rollups, the store-backed transcript, and
-session cost folding are in place. Remaining: live `task`-subagent observation
-and visual TUI checks (see "Implementation status"), then **P5 (session comms)**,
-scoped below with its harness probe results already recorded.
+Status: **P0–P4 complete; P5 (session comms) implemented**. Server tap, session
+fold, coord bridge, `swarm_status` (text/json/tree + inbox pull), `swarm_send`,
+queue-only inbox-notice injection, `shell.env` identity injection, TUI
+sidebar/route/toasts, the nested session tree with collapse/rollups, the
+store-backed transcript, session cost folding, and the TUI composer/inbox are in
+place. Remaining: live `task`-subagent observation and visual TUI checks (see
+"Implementation status"), then P6 (cross-process aggregation and packaging).
 
 ## Locked decisions
 
@@ -82,7 +82,7 @@ subplug/
   tsconfig.json
   src/server/index.ts    # event tap -> hub; shell.env identity inject; swarm_status tool
   src/tui/index.tsx      # sidebar slot, dashboard route, toasts/attention (SolidJS)
-  src/hub/               # store paths, append, rotation, fold, monitor merge
+  src/hub/               # store paths, append, rotation, fold, monitor merge, comms
   src/coord/             # claims reader/fold/conflicts, glob, repo discovery
   src/shared/            # normalized records, redaction
   scripts/dev-harness.ts # scratch config + seeded repo; headless server + TUI checks
@@ -148,19 +148,25 @@ subplug/
 - Privacy defaults and storage retention.
 - Windows path/EOL parity.
 - Mapping quality when `COORD_AGENT_ID` is absent.
-- Default-on comms contradicts the read-only language in README, package.json,
-  and the `swarm_status` description (`server/index.ts:663`); update all three.
-- Injection runs on the model-request critical path and `readEventRecords`
-  re-parses every JSONL per call; needs memoized folds and a timeout/skip path.
+- ~~Default-on comms contradicts the read-only language in README, package.json,
+  and the `swarm_status` description (`server/index.ts:663`); update all three.~~
+  Resolved in P5: all three now describe the opt-out, queue-only comms tier.
+- ~~Injection runs on the model-request critical path and `readEventRecords`
+  re-parses every JSONL per call; needs memoized folds and a timeout/skip path.~~
+  Resolved in P5: the server keeps an in-memory comms fold updated on append and
+  replay; `chat.message` reads only that map after the memoized `ensure()`.
 - Cross-session content is untrusted input; frame as data, never inject via
   the system prompt by default.
 - Agent-to-agent loops and token burn: addressed-only, no auto-reply, hop
   cap <= 2, per-session send caps.
-- A prompt to a busy target is consumed at the next step boundary and can
-  interleave with in-flight work; busy sends need a confirm.
-- `comms.*` records must not flow through `fold.ts`'s default `ensure()` path.
-- Plugin-appended parts need ascending ids (the runtime mints them); a random
-  id may sort oddly in the transcript.
+- Busy sends are confirmed (`swarm_send` refuses without `confirm: true`; the TUI
+  composer asks first) and are consumed at the next step boundary.
+- ~~`comms.*` records must not flow through `fold.ts`'s default `ensure()` path.~~
+  Resolved in P5: `comms.*` cases are explicit fold no-ops.
+- ~~Plugin-appended parts need ascending ids (the runtime mints them); a random
+  id may sort oddly in the transcript.~~ Probed in P5 (`--probe-inject`): the
+  runtime persists our synthetic part; time-prefixed ids sorted after the native
+  part on this build.
 
 ## P0 findings
 
@@ -266,6 +272,20 @@ Confirmed against opencode 1.18.32 with the dev harness (scratch
 - `api.state.session.count()` only includes sessions with content: the empty
   root session is absent (`get(rootID)` false). Render metadata from the hub
   for empty sessions and transcript from the store when present.
+- `api.state.part(messageID)` works for a non-current subagent message (the
+  probe records `childStoreParts: 1`, type `text`), so the store path covers
+  parts as well as messages.
+
+`bun run scripts/dev-harness.ts --probe-inject`:
+
+- A `comms.sent` pointer written into the hub while the server is stopped is
+  replayed into the in-memory comms fold on restart; the next user message to
+  the addressed child gets ONE synthetic text part appended in `chat.message`.
+- The part persists in the v1 message list with `synthetic: true` and the
+  inbox framing; observed part ids were native `prt_0e854a0ad...` then injected
+  `prt_mulbjhzv...` (the injected id sorts after the native one on this
+  runtime, so transcript order is preserved).
+- The plugin records `comms.delivered` for the injected pointer.
 
 ### Harness notes from probing
 
@@ -323,9 +343,12 @@ call.
 2. `swarm_send` tool (accepts `session` or `task_id`) + inbox pull folded into
    `swarm_status`.
 3. Injection: synthetic text part on the target context (native pattern), or
-   guarded `system.transform` later. Default-on but a strict no-op when the
-   inbox is empty; addressed; deduped by msgID; TTL'd pointers; capped bytes;
-   short fetch timeout that skips on failure.
+   guarded `system.transform` later. Default-on (`comms.inject`) but a strict
+   no-op when the inbox is empty; addressed; deduped by msgID; TTL'd pointers;
+   capped bytes; short fetch timeout that skips on failure. **Shipped as a
+   framed pointer notice** in `chat.message`: the body already lands natively via
+   `session.prompt`, so injection announces pending pointers, marks them
+   `comms.delivered`, and leaves bodies in the native store.
 
 ### Probes (harness)
 
@@ -366,30 +389,28 @@ logic; the harness only proves hooks fire and pointers land.
 | Probe: busy-session admission + v1/v2 store split | done | `--probe-comms` (see results) |
 | Probe: plugin store coverage for subagents | done | `--probe-tui-state` (see results) |
 | P4 viewing implementation | done | `test/tree.test.ts` + `test/transcript.test.ts` pure helpers; cost fold in `test/hub.test.ts`/`test/server.test.ts`; TUI tree/rollups/transcript + `swarm_status format=tree`; `--tui` load; visual check user-run |
-| P5 comms implementation | pending | plan in "P5 scope" |
+| P5 comms implementation | done | `test/comms.test.ts` pure helpers; `swarm_send` + inbox-pull tests in `test/server.test.ts`; injection `--probe-inject`; TUI composer/inbox `--tui` load; visual check user-run |
+| Probe: injection part persistence + `comms.delivered` | done | `--probe-inject` (see results) |
 
 ## Handoff prompt for a fresh window
 
-> Read PLAN.md. P0-P3 are complete and P4 (viewing subagents) is implemented
-> and committed: pure `src/hub/tree.ts` + `src/shared/transcript.ts` helpers
-> with unit tests; session cost + `recentCommands` folded into the hub; the
-> nested TUI tree with `api.kv` collapse, orphan/deleted markers, last-command
-> age, and subtree rollups; the store-backed live transcript (full parts,
-> `api.state.part()` verified for subagent sessions, pgup/pgdn scroll,
-> max-input context %, summed cost); `swarm_status format=tree`. Automated
-> gate: `bun install; bun run typecheck; bun test` (59 pass);
+> Read PLAN.md. P0–P5 are implemented and committed. P5 (session comms) adds
+> `src/hub/comms.ts` (fold/inbox/resolveTargets/buildInboxBlock) with unit
+> tests; `swarm_send` (`session`/`task_id`, busy-confirm, 5/min cap);
+> `swarm_status inbox: true` pull with `comms.seen`; inbox-notice injection in
+> `chat.message` (`comms.inject`, in-memory comms fold, dedupe/TTL/byte caps,
+> marks `comms.delivered`); and the TUI `m` composer plus the detail Inbox
+> panel. Automated gate: `bun install; bun run typecheck; bun test` (77 pass);
 > `bun run scripts/dev-harness.ts`; `bun run scripts/dev-harness.ts --tui`;
-> `bun run scripts/dev-harness.ts --probe-tui-state`. The user still runs the
-> manual checks from the README: `--demo --keep` + `opencode` for the visual
-> tree/collapse/rollup/transcript check and a real `task` prompt + `--inspect`.
-> Next is P5 (session comms), scoped in "P5 scope" with both probes already run.
-> Use the flat client (`api.client.session.messages/todo/children/prompt`) for
-> v1 sessions, not the v2 `/api/session` store; read transcripts from
-> `api.state.session.messages()` + `api.state.part()` when the store has
-> content, falling back to the flat client. Keep `client.path.get()` out of
-> eager plugin init, and keep any inbox fetch off the model-request critical
-> path unless memoized and timeout-guarded. Harness gotcha: always use a
-> fresh/random port and kill stale listeners; a zombie serve silently answers
-> with stale code. Portability/packaging (own GitHub repo, LICENSE,
-> `bun.lock`, `.gitattributes`, dual-platform README, engines, CI,
-> `resolveStateDir` retry/fallback fix) remains P6.
+> `--probe-comms`; `--probe-tui-state`; `--probe-inject`. The user still runs
+> the README manual checks: `--demo --keep` + `opencode` for the visual
+> tree/collapse/rollups/transcript/inbox/composer check and a real `task`
+> prompt + `--inspect`. Next is P6 (cross-process aggregation plus
+> portability/packaging: own GitHub repo, LICENSE, `bun.lock`, `.gitattributes`,
+> dual-platform README, engines, CI, `resolveStateDir` retry/fallback fix).
+> Keep using the flat client for v1 sessions (never the v2 `/api/session`
+> store), read transcripts from `api.state.session.messages()`/`part()` when
+> the store has content, keep `client.path.get()` out of eager plugin init, and
+> keep comms queue-only/addressed with metadata-only hub pointers. Harness
+> gotcha: random port, kill stale listeners; a zombie serve answers with stale
+> code.

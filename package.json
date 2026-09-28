@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "description": "Monitor other opencode sessions and subagents, overlaid with the coordination/ claim registry.",
+  "description": "Monitor other opencode sessions and subagents, overlaid with the coordination/ claim registry, with queue-only addressed comms.",
   "license": "MIT",
   "repository": {
     "type": "git",
