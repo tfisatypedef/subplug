@@ -727,7 +727,7 @@ const server: Plugin = async (input, options) => {
         summary: "subplug server tap online",
         refs: { directory: input.directory, worktree: input.worktree },
       })
-      await seedBaseline()
+      if (!process.env.SUBPLUG_SKIP_BASELINE) await seedBaseline()
     } catch {
       // deferred bootstrap is best-effort; hooks still retry through ensure()
     }
