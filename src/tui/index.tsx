@@ -28,7 +28,7 @@ type Cfg = {
   hubGroup: string | undefined
 }
 
-type Skin = {
+export type Skin = {
   panel: RGBA | string
   border: RGBA | string
   text: RGBA | string
@@ -189,62 +189,62 @@ function rollupDetail(rollup: SubtreeRollup): string {
   return parts.join(" · ")
 }
 
-function transcriptLine(row: TranscriptRow, skin: Skin) {
+export function transcriptLine(row: TranscriptRow, skin: Skin) {
   switch (row.kind) {
     case "text":
       return (
-        <text fg={row.role === "user" ? skin.text : skin.muted}>
+        <text flexShrink={0} fg={row.role === "user" ? skin.text : skin.muted}>
           <span style={{ fg: row.role === "user" ? skin.accent : skin.success }}>{row.role}</span>
           {row.agent ? ` ${row.agent}` : ""}: {row.text}
         </text>
       )
     case "reasoning":
       return (
-        <text fg={skin.muted}>
+        <text flexShrink={0} fg={skin.muted}>
           [reasoning {compactTokens(row.chars)}] {row.preview ?? ""}
         </text>
       )
     case "tool":
       return (
-        <box flexDirection="column">
-          <text fg={row.status === "error" ? skin.error : row.status === "running" ? skin.success : skin.muted}>
+        <box flexShrink={0} flexDirection="column">
+          <text flexShrink={0} fg={row.status === "error" ? skin.error : row.status === "running" ? skin.success : skin.muted}>
             [tool] {row.tool} {row.status}
             {row.title ? ` · ${row.title}` : ""}
             {typeof row.elapsedMs === "number" ? ` · ${formatDuration(row.elapsedMs)}` : ""}
           </text>
-          {row.error ? <text fg={skin.error}> {row.error}</text> : null}
-          {row.outputTail ? <text fg={skin.muted}> {row.outputTail}</text> : null}
+          {row.error ? <text flexShrink={0} fg={skin.error}> {row.error}</text> : null}
+          {row.outputTail ? <text flexShrink={0} fg={skin.muted}> {row.outputTail}</text> : null}
         </box>
       )
     case "file":
       return (
-        <text fg={skin.muted}>
+        <text flexShrink={0} fg={skin.muted}>
           [file] {row.filename}
           {row.mime ? ` (${row.mime})` : ""}
         </text>
       )
     case "patch":
       return (
-        <text fg={skin.muted}>
+        <text flexShrink={0} fg={skin.muted}>
           [patch] {row.files} file{row.files === 1 ? "" : "s"}
         </text>
       )
     case "agent":
-      return <text fg={skin.muted}>[agent] {row.name}</text>
+      return <text flexShrink={0} fg={skin.muted}>[agent] {row.name}</text>
     case "retry":
-      return <text fg={skin.warning}>[retry #{row.attempt}]</text>
+      return <text flexShrink={0} fg={skin.warning}>[retry #{row.attempt}]</text>
     case "compaction":
-      return <text fg={skin.warning}>[compaction{row.auto ? " auto" : ""}]</text>
+      return <text flexShrink={0} fg={skin.warning}>[compaction{row.auto ? " auto" : ""}]</text>
     case "step":
       return (
-        <text fg={skin.muted}>
+        <text flexShrink={0} fg={skin.muted}>
           [step]
           {typeof row.cost === "number" ? ` $${row.cost.toFixed(4)}` : ""}
           {typeof row.tokens === "number" ? ` · ${compactTokens(row.tokens)} tokens` : ""}
         </text>
       )
     default:
-      return <text fg={skin.muted}>[{row.label}]</text>
+      return <text flexShrink={0} fg={skin.muted}>[{row.label}]</text>
   }
 }
 
@@ -529,27 +529,27 @@ export function Sidebar(props: { state: () => MonitorState; sessionID: string; o
       gap={1}
       onMouseDown={() => props.onOpen()}
     >
-      <text fg={"#5f87ff"}>
+      <text flexShrink={0} fg={"#5f87ff"}>
         <b>Agents</b>
         <span style={{ fg: "#a5a5a5" }}> subplug</span>
       </text>
-      {snapshot().sessions.length === 0 ? <text fg={"#a5a5a5"}>no sessions seen yet</text> : null}
+      {snapshot().sessions.length === 0 ? <text flexShrink={0} fg={"#a5a5a5"}>no sessions seen yet</text> : null}
       {snapshot()
         .sessions.slice(-8)
         .map((session) => (
-          <text fg={session.sessionID === props.sessionID ? "#f0f0f0" : "#a5a5a5"}>
+          <text flexShrink={0} fg={session.sessionID === props.sessionID ? "#f0f0f0" : "#a5a5a5"}>
             {session.sessionID === props.sessionID ? "▸ " : "  "}
             {statusMark(session.status)} {session.kind === "subagent" ? "└ " : ""}
             {sessionLabel(session)}
           </text>
         ))}
-      <text fg={"#a5a5a5"}>
+      <text flexShrink={0} fg={"#a5a5a5"}>
         claims {snapshot().registry.claims.filter((claim) => claim.status === "active").length} active
         {snapshot().registry.conflicts.length > 0
           ? ` · ${snapshot().registry.conflicts.length} conflict${snapshot().registry.conflicts.length === 1 ? "" : "s"}`
           : ""}
       </text>
-      <text fg={"#5f87ff"}>click or ctrl+alt+a / /subplug to open</text>
+      <text flexShrink={0} fg={"#5f87ff"}>click or ctrl+alt+a / /subplug to open</text>
     </box>
   )
 }
@@ -649,7 +649,7 @@ export function Dashboard(props: {
   onCleanup(disposeKeys)
 
   return (
-    <box flexGrow={1} minHeight={0} backgroundColor={skin().panel} flexDirection="column">
+    <box flexGrow={1} minHeight={0} overflow="hidden" backgroundColor={skin().panel} flexDirection="column">
       <box
         flexDirection="column"
         alignItems="stretch"
@@ -661,19 +661,21 @@ export function Dashboard(props: {
         paddingRight={2}
         gap={1}
       >
-        <box flexDirection="row" justifyContent="space-between">
-          <text fg={skin().text}>
+        <box flexShrink={0} flexDirection="row" justifyContent="space-between">
+          <text flexShrink={0} fg={skin().text}>
             <b>subplug</b>
             <span style={{ fg: skin().muted }}> swarm dashboard</span>
           </text>
-          <text fg={skin().muted}>updated {age(snapshot().generatedAt, Date.now())} ago</text>
+          <text flexShrink={0} fg={skin().muted}>updated {age(snapshot().generatedAt, Date.now())} ago</text>
         </box>
-        <text fg={skin().muted}>hub {snapshot().hubDir || "(resolving)"}</text>
+        <text flexShrink={0} fg={skin().muted}>hub {snapshot().hubDir || "(resolving)"}</text>
 
         <box
           border
           borderColor={skin().border}
           flexDirection="column"
+          flexShrink={0}
+          overflow="hidden"
           paddingLeft={1}
           paddingRight={1}
           paddingTop={1}
@@ -681,15 +683,15 @@ export function Dashboard(props: {
           gap={1}
           flexGrow={1}
         >
-          <text fg={skin().accent}>
+          <text flexShrink={0} fg={skin().accent}>
             <b>Sessions ({snapshot().sessions.length})</b>
           </text>
-          {rows().length === 0 ? <text fg={skin().muted}>no sessions recorded yet</text> : null}
+          {rows().length === 0 ? <text flexShrink={0} fg={skin().muted}>no sessions recorded yet</text> : null}
           {rows().map((row, index) => {
             const rollup = rollupLabel(rollupSubtree(sessions(), row.session.sessionID))
             return (
-              <box flexDirection="column">
-                <text fg={statusColor(skin(), row.session.status)}>
+              <box flexShrink={0} flexDirection="column">
+                <text flexShrink={0} fg={statusColor(skin(), row.session.status)}>
                   <span style={{ fg: index === current() ? skin().accent : skin().muted }}>
                     {index === current() ? "▸ " : "  "}
                   </span>
@@ -716,6 +718,8 @@ export function Dashboard(props: {
           border
           borderColor={skin().border}
           flexDirection="column"
+          flexShrink={0}
+          overflow="hidden"
           paddingLeft={1}
           paddingRight={1}
           paddingTop={1}
@@ -723,12 +727,12 @@ export function Dashboard(props: {
           gap={1}
           flexGrow={1}
         >
-          <text fg={skin().accent}>
+          <text flexShrink={0} fg={skin().accent}>
             <b>Claims ({holders().length} active)</b>
           </text>
-          {holders().length === 0 ? <text fg={skin().muted}>no active claims</text> : null}
+          {holders().length === 0 ? <text flexShrink={0} fg={skin().muted}>no active claims</text> : null}
           {holders().map(({ claim, session }) => (
-            <text fg={skin().text}>
+            <text flexShrink={0} fg={skin().text}>
               <span style={{ fg: skin().muted }}>{claim.claimID.slice(-10)}</span> {claimLabel(claim, now())}
               {session ? (
                 <span style={{ fg: skin().success }}> ⇄ {session.sessionID.slice(0, 10)}</span>
@@ -739,16 +743,16 @@ export function Dashboard(props: {
             </text>
           ))}
           {snapshot().registry.conflicts.map((conflict) => (
-            <text fg={skin().error}>
+            <text flexShrink={0} fg={skin().error}>
               conflict {conflict.a.slice(-10)} / {conflict.b.slice(-10)}: {conflict.reason}
             </text>
           ))}
           {snapshot().registry.errors.length > 0 ? (
-            <text fg={skin().warning}>registry errors: {snapshot().registry.errors.length}</text>
+            <text flexShrink={0} fg={skin().warning}>registry errors: {snapshot().registry.errors.length}</text>
           ) : null}
         </box>
 
-        <text fg={skin().muted}>
+        <text flexShrink={0} fg={skin().muted}>
           ↑/↓ select · ←/→ collapse · enter open · m message · esc/q back · /{props.route} reopens · {props.command}{" "}
           from the palette
         </text>
@@ -906,7 +910,7 @@ export function SessionDetail(props: {
   }
 
   return (
-    <box flexGrow={1} minHeight={0} backgroundColor={skin().panel} flexDirection="column">
+    <box flexGrow={1} minHeight={0} overflow="hidden" backgroundColor={skin().panel} flexDirection="column">
       <box
         flexDirection="column"
         alignItems="stretch"
@@ -918,45 +922,47 @@ export function SessionDetail(props: {
         paddingRight={2}
         gap={1}
       >
-        <box flexDirection="row" justifyContent="space-between">
-          <text fg={skin().text}>
+        <box flexShrink={0} flexDirection="row" justifyContent="space-between">
+          <text flexShrink={0} fg={skin().text}>
             <b>subplug</b>
             <span style={{ fg: skin().muted }}> session detail</span>
           </text>
-          <text fg={skin().muted}>esc/q back</text>
+          <text flexShrink={0} fg={skin().muted}>esc/q back</text>
         </box>
-        <text fg={skin().muted}>{breadcrumb()}</text>
-        <text fg={skin().text}>
+        <text flexShrink={0} fg={skin().muted}>{breadcrumb()}</text>
+        <text flexShrink={0} fg={skin().text}>
           {session() ? `${statusMark(session()!.status)} ${sessionLabel(session()!)}` : props.sessionID()}
         </text>
-        <text fg={skin().muted}>
+        <text flexShrink={0} fg={skin().muted}>
           {shortID(props.sessionID())} · {session()?.status ?? "unknown"}
           {session()?.agent ? ` · agent=${session()!.agent}` : ""}
           {session()?.model ? ` · model=${session()!.model}` : ""}
           {session()?.identity ? ` · ${session()!.identity}` : ""}
         </text>
-        <text fg={skin().success}>{subtree()}</text>
-        {session()?.directory ? <text fg={skin().muted}>{session()!.directory}</text> : null}
-        {usage() ? <text fg={skin().accent}>{usage()}</text> : null}
+        <text flexShrink={0} fg={skin().success}>{subtree()}</text>
+        {session()?.directory ? <text flexShrink={0} fg={skin().muted}>{session()!.directory}</text> : null}
+        {usage() ? <text flexShrink={0} fg={skin().accent}>{usage()}</text> : null}
 
         <box
           border
           borderColor={skin().border}
           flexDirection="column"
+          flexShrink={0}
+          overflow="hidden"
           paddingLeft={1}
           paddingRight={1}
           paddingTop={1}
           paddingBottom={1}
           gap={1}
         >
-          <text fg={skin().accent}>
+          <text flexShrink={0} fg={skin().accent}>
             <b>Todos ({detail().todos.length})</b>
           </text>
-          {detail().todos.length === 0 ? <text fg={skin().muted}>no todos recorded</text> : null}
+          {detail().todos.length === 0 ? <text flexShrink={0} fg={skin().muted}>no todos recorded</text> : null}
           {detail()
             .todos.slice(-8)
             .map((todo) => (
-              <text fg={skin().text}>
+              <text flexShrink={0} fg={skin().text}>
                 <span style={{ fg: todo.status === "completed" ? skin().success : skin().muted }}>
                   [{todo.status}]
                 </span>{" "}
@@ -970,17 +976,19 @@ export function SessionDetail(props: {
             border
             borderColor={skin().border}
             flexDirection="column"
+            flexShrink={0}
+            overflow="hidden"
             paddingLeft={1}
             paddingRight={1}
             paddingTop={1}
             paddingBottom={1}
             gap={1}
           >
-            <text fg={skin().accent}>
+            <text flexShrink={0} fg={skin().accent}>
               <b>Subagents ({children().length})</b>
             </text>
             {children().map((child, index) => (
-              <text fg={statusColor(skin(), child.status)}>
+              <text flexShrink={0} fg={statusColor(skin(), child.status)}>
                 <span style={{ fg: index === currentChild() ? skin().accent : skin().muted }}>
                   {index === currentChild() ? "▸ " : "  "}
                 </span>
@@ -995,17 +1003,19 @@ export function SessionDetail(props: {
             border
             borderColor={skin().border}
             flexDirection="column"
+            flexShrink={0}
+            overflow="hidden"
             paddingLeft={1}
             paddingRight={1}
             paddingTop={1}
             paddingBottom={1}
             gap={1}
           >
-            <text fg={skin().accent}>
+            <text flexShrink={0} fg={skin().accent}>
               <b>Claims ({claims().length})</b>
             </text>
             {claims().map((claim) => (
-              <text fg={skin().text}>
+              <text flexShrink={0} fg={skin().text}>
                 <span style={{ fg: skin().muted }}>{claim.claimID.slice(-10)}</span> {claim.agent} expires=
                 {claim.expires}
               </text>
@@ -1018,17 +1028,19 @@ export function SessionDetail(props: {
             border
             borderColor={skin().border}
             flexDirection="column"
+            flexShrink={0}
+            overflow="hidden"
             paddingLeft={1}
             paddingRight={1}
             paddingTop={1}
             paddingBottom={1}
             gap={1}
           >
-            <text fg={skin().accent}>
+            <text flexShrink={0} fg={skin().accent}>
               <b>Inbox ({inbox().length} pending)</b>
             </text>
             {inbox().map((pointer) => (
-              <text fg={skin().text}>
+              <text flexShrink={0} fg={skin().text}>
                 <span style={{ fg: skin().muted }}>{pointer.msgID.slice(-8)}</span> {pointer.from}{" "}
                 {age(pointer.ts, props.state().generatedAt)} ago: {pointer.summary}
               </text>
@@ -1040,6 +1052,7 @@ export function SessionDetail(props: {
           border
           borderColor={skin().border}
           flexDirection="column"
+          flexShrink={1}
           overflow="hidden"
           paddingLeft={1}
           paddingRight={1}
@@ -1048,15 +1061,15 @@ export function SessionDetail(props: {
           gap={1}
           flexGrow={1}
         >
-          <box flexDirection="row" justifyContent="space-between">
-            <text fg={skin().accent}>
+          <box flexShrink={0} flexDirection="row" justifyContent="space-between">
+            <text flexShrink={0} fg={skin().accent}>
               <b>Conversation ({detail().rows.length} rows)</b>
             </text>
-            <text fg={skin().muted}>
+            <text flexShrink={0} fg={skin().muted}>
               ↑/↓ subagent · pgup/pgdn scroll{scroll() ? ` (${scroll()})` : ""}
             </text>
           </box>
-          {detail().rows.length === 0 ? <text fg={skin().muted}>no transcript loaded</text> : null}
+          {detail().rows.length === 0 ? <text flexShrink={0} fg={skin().muted}>no transcript loaded</text> : null}
           {visibleRows().map((row) => transcriptLine(row, skin()))}
         </box>
       </box>

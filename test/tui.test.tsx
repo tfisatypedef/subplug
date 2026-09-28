@@ -2,8 +2,9 @@
 import { describe, expect, test } from "bun:test"
 import { testRender, type JSX } from "@opentui/solid"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
-import { Dashboard, SessionDetail, Sidebar } from "../src/tui/index.tsx"
+import { Dashboard, SessionDetail, Sidebar, transcriptLine, type Skin } from "../src/tui/index.tsx"
 import type { MonitorState, SessionNode } from "../src/shared/types.ts"
+import type { TranscriptRow } from "../src/shared/transcript.ts"
 
 const WIDTH = 100
 const HEIGHT = 30
@@ -57,19 +58,30 @@ function stubApi(): TuiPluginApi {
   } as unknown as TuiPluginApi
 }
 
-async function renderHosted(node: () => JSX.Element) {
+async function renderHosted(node: () => JSX.Element, width = WIDTH, height = HEIGHT) {
   const setup = await testRender(
     () => (
-      <box width={WIDTH} height={HEIGHT} flexDirection="column">
+      <box width={width} height={height} flexDirection="column">
         <box flexGrow={1} minHeight={0} flexDirection="column">
           {node()}
         </box>
       </box>
     ),
-    { width: WIDTH, height: HEIGHT },
+    { width, height },
   )
   await setup.flush()
   return setup
+}
+
+const SKIN: Skin = {
+  panel: "#000000",
+  border: "#333333",
+  text: "#ffffff",
+  muted: "#888888",
+  accent: "#5f87ff",
+  error: "#ff0000",
+  warning: "#ffaa00",
+  success: "#00ff00",
 }
 
 function gap(line: string, left: string, right: string): number {
@@ -132,6 +144,72 @@ describe("subplug TUI layout", () => {
 
     const todos = lines.find((line) => line.includes("Todos ("))
     expect(todos?.trimEnd().endsWith("│")).toBe(true)
+    setup.renderer.destroy()
+  })
+
+  test("a short terminal clips panels instead of overlapping rows", async () => {
+    const sessions = Array.from({ length: 24 }, (_, index) =>
+      session({
+        sessionID: `ses_${String(index).padStart(12, "0")}`,
+        title: `session ${String(index).padStart(2, "0")}`,
+      }),
+    )
+    const state: MonitorState = { ...monitorState(), sessions }
+    const setup = await renderHosted(
+      () => (
+        <Dashboard
+          api={stubApi()}
+          state={() => state}
+          route="subplug"
+          command="subplug.open"
+          onClose={() => undefined}
+          openSession={() => undefined}
+          compose={() => undefined}
+        />
+      ),
+      60,
+      14,
+    )
+    const lines = setup.captureCharFrame().split("\n")
+    const sessionLines = lines.filter((line) => /session \d\d/.test(line))
+    expect(sessionLines.length).toBeGreaterThan(2)
+    for (const line of sessionLines) {
+      expect(line.match(/session \d\d/g)?.length).toBe(1)
+      expect(line.startsWith("  │")).toBe(true)
+    }
+    setup.renderer.destroy()
+  })
+
+  test("multi-line tool output reserves its rows", async () => {
+    const rows: TranscriptRow[] = [
+      {
+        kind: "tool",
+        key: "t1",
+        tool: "bash",
+        status: "completed",
+        title: "run",
+        elapsedMs: 1200,
+        outputTail: "line one\nline two",
+      },
+      { kind: "text", key: "t2", role: "assistant", text: "MARKER_AFTER_TOOL" },
+    ]
+    const setup = await testRender(
+      () => (
+        <box width={60} height={6} flexDirection="column">
+          <box flexShrink={1} minHeight={0} overflow="hidden" border flexDirection="column">
+            {rows.map((row) => transcriptLine(row, SKIN))}
+          </box>
+        </box>
+      ),
+      { width: 60, height: 6 },
+    )
+    await setup.flush()
+    const lines = setup.captureCharFrame().split("\n")
+    const tailLine = lines.findIndex((line) => line.includes("line two"))
+    const markerLine = lines.findIndex((line) => line.includes("MARKER_AFTER_TOOL"))
+    expect(tailLine).toBeGreaterThanOrEqual(0)
+    expect(markerLine).toBeGreaterThan(tailLine)
+    expect(lines[markerLine]?.includes("line two")).toBe(false)
     setup.renderer.destroy()
   })
 
