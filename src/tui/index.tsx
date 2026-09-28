@@ -6,7 +6,8 @@ import { createBindingLookup, type BindingConfig } from "@opentui/keymap/extras"
 import { createSignal, onCleanup } from "solid-js"
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule, TuiSlotPlugin } from "@opencode-ai/plugin/tui"
 import type { ClaimRecord, MonitorState, SessionNode } from "../shared/types.ts"
-import { joinClaimsToSessions, readMonitorState } from "../hub/monitor.ts"
+import { joinClaimsToSessions, lastCommandBySession, readMonitorState, type LastCommand } from "../hub/monitor.ts"
+import { buildSessionTree, flattenTree, rollupSubtree, type SubtreeRollup, type TreeRow } from "../hub/tree.ts"
 import { hubRoot } from "../hub/paths.ts"
 import { findRepoRoot } from "../coord/repo.ts"
 
@@ -117,6 +118,64 @@ function claimLabel(claim: ClaimRecord, now: number): string {
   const remaining = Number.isNaN(expiry) ? "?" : age(now, expiry)
   const baton = claim.scopes.baton ? ` ⚑${claim.scopes.baton}` : ""
   return `${claim.agent} ${remaining}${baton}`
+}
+
+const COLLAPSE_KEY = "subplug.collapsed"
+
+function shortID(sessionID: string): string {
+  return sessionID.slice(0, 8)
+}
+
+function readCollapsed(api: TuiPluginApi): Set<string> {
+  try {
+    const value = api.kv.get<unknown>(COLLAPSE_KEY, [])
+    if (Array.isArray(value)) {
+      return new Set(value.filter((item): item is string => typeof item === "string"))
+    }
+  } catch {
+    // collapse state is a convenience
+  }
+  return new Set()
+}
+
+function writeCollapsed(api: TuiPluginApi, collapsed: ReadonlySet<string>): void {
+  try {
+    api.kv.set(COLLAPSE_KEY, [...collapsed])
+  } catch {
+    // collapse state is a convenience
+  }
+}
+
+function treePrefix(row: TreeRow): string {
+  return row.depth > 0 ? `${"  ".repeat(row.depth - 1)}└ ` : ""
+}
+
+function commandLabel(sessionID: string, commands: Map<string, LastCommand>, now: number): string {
+  const command = commands.get(sessionID)
+  if (!command) return ""
+  const summary = command.summary ? ` ${command.summary.slice(0, 32)}` : ""
+  return ` · ${command.category}${summary} ${age(command.ts, now)} ago`
+}
+
+function rollupLabel(rollup: SubtreeRollup): string | undefined {
+  const parts: string[] = []
+  if (rollup.total > 1) parts.push(`${rollup.total - 1} sub`)
+  if (rollup.busy) parts.push(`${rollup.busy} busy`)
+  if (rollup.retry) parts.push(`${rollup.retry} retry`)
+  if (rollup.error) parts.push(`${rollup.error} err`)
+  if (rollup.deleted) parts.push(`${rollup.deleted} deleted`)
+  if (rollup.cost) parts.push(`$${rollup.cost.toFixed(4)}`)
+  return parts.length ? parts.join(" · ") : undefined
+}
+
+function rollupDetail(rollup: SubtreeRollup): string {
+  const parts = [`${rollup.total} session${rollup.total === 1 ? "" : "s"}`]
+  if (rollup.busy) parts.push(`${rollup.busy} busy`)
+  if (rollup.retry) parts.push(`${rollup.retry} retry`)
+  if (rollup.error) parts.push(`${rollup.error} err`)
+  if (rollup.deleted) parts.push(`${rollup.deleted} deleted`)
+  if (rollup.cost) parts.push(`$${rollup.cost.toFixed(4)}`)
+  return parts.join(" · ")
 }
 
 type MessageInfo = {
@@ -321,12 +380,17 @@ function Dashboard(props: {
   route: string
   command: string
   onClose: () => void
+  openSession: (sessionID: string) => void
 }) {
   const snapshot = () => props.state()
   const skin = () => skinOf(props.api)
   const now = () => snapshot().generatedAt
   const holders = () => joinClaimsToSessions(snapshot().registry, snapshot().sessions)
-  const rows = () => [...snapshot().sessions].sort((a, b) => b.lastEventAt - a.lastEventAt)
+  const sessions = () => snapshot().sessions
+  const commands = () => lastCommandBySession(snapshot().recentCommands)
+  const [collapsed, setCollapsed] = createSignal<Set<string>>(readCollapsed(props.api))
+  const tree = () => buildSessionTree(sessions())
+  const rows = () => flattenTree(tree(), collapsed())
   const [selected, setSelected] = createSignal(0)
   const current = () => Math.min(selected(), Math.max(0, rows().length - 1))
 
@@ -335,15 +399,28 @@ function Dashboard(props: {
     if (!total) return
     setSelected(Math.max(0, Math.min(total - 1, current() + delta)))
   }
+  const setCollapse = (collapse: boolean) => {
+    const row = rows()[current()]
+    if (!row || !row.hasChildren) return
+    const next = new Set(collapsed())
+    if (collapse) next.add(row.session.sessionID)
+    else next.delete(row.session.sessionID)
+    setCollapsed(next)
+    writeCollapsed(props.api, next)
+    const index = flattenTree(tree(), next).findIndex((item) => item.session.sessionID === row.session.sessionID)
+    if (index >= 0) setSelected(index)
+  }
   const open = () => {
     const row = rows()[current()]
     if (!row) return
-    props.api.route.navigate(`${props.route}.session`, { sessionID: row.sessionID })
+    props.openSession(row.session.sessionID)
   }
 
   const routeKeys: BindingConfig<Renderable, KeyEvent> = {
     "subplug.select.next": "down",
     "subplug.select.prev": "up",
+    "subplug.collapse": "left",
+    "subplug.expand": ["right", "space"],
     "subplug.open.selected": "return",
     "subplug.dashboard.back": ["escape", "q"],
   }
@@ -353,6 +430,8 @@ function Dashboard(props: {
     commands: [
       { name: "subplug.select.next", title: "Subplug: next session", category: "Plugin", run: () => move(1) },
       { name: "subplug.select.prev", title: "Subplug: previous session", category: "Plugin", run: () => move(-1) },
+      { name: "subplug.collapse", title: "Subplug: collapse session", category: "Plugin", run: () => setCollapse(true) },
+      { name: "subplug.expand", title: "Subplug: expand session", category: "Plugin", run: () => setCollapse(false) },
       {
         name: "subplug.open.selected",
         title: "Subplug: open session detail",
@@ -369,6 +448,8 @@ function Dashboard(props: {
     bindings: keys.gather("subplug.dashboard", [
       "subplug.select.next",
       "subplug.select.prev",
+      "subplug.collapse",
+      "subplug.expand",
       "subplug.open.selected",
       "subplug.dashboard.back",
     ]),
@@ -411,23 +492,31 @@ function Dashboard(props: {
             <b>Sessions ({snapshot().sessions.length})</b>
           </text>
           {rows().length === 0 ? <text fg={skin().muted}>no sessions recorded yet</text> : null}
-          {rows().map((session, index) => (
-            <box flexDirection="column">
-              <text fg={statusColor(skin(), session.status)}>
-                <span style={{ fg: index === current() ? skin().accent : skin().muted }}>
-                  {index === current() ? "▸ " : "  "}
-                </span>
-                {statusMark(session.status)} {session.kind === "subagent" ? "└ " : ""}
-                <span style={{ fg: skin().text }}>{sessionLabel(session)}</span>
-                <span style={{ fg: skin().muted }}>
-                  {" "}
-                  {session.sessionID.slice(0, 12)} {session.status} {age(session.lastEventAt, now())} ago
-                  {session.agent ? ` agent=${session.agent}` : ""}
-                  {session.model ? ` model=${session.model}` : ""}
-                </span>
-              </text>
-            </box>
-          ))}
+          {rows().map((row, index) => {
+            const rollup = rollupLabel(rollupSubtree(sessions(), row.session.sessionID))
+            return (
+              <box flexDirection="column">
+                <text fg={statusColor(skin(), row.session.status)}>
+                  <span style={{ fg: index === current() ? skin().accent : skin().muted }}>
+                    {index === current() ? "▸ " : "  "}
+                  </span>
+                  {treePrefix(row)}
+                  {row.hasChildren ? (row.collapsed ? "▸ " : "▾ ") : ""}
+                  {statusMark(row.session.status)} {row.orphan ? "? " : ""}
+                  <span style={{ fg: skin().text }}>{sessionLabel(row.session)}</span>
+                  {row.session.deleted ? <span style={{ fg: skin().error }}> [deleted]</span> : null}
+                  <span style={{ fg: skin().muted }}>
+                    {" "}
+                    {shortID(row.session.sessionID)} {row.session.status} {age(row.session.lastEventAt, now())} ago
+                    {row.session.agent ? ` agent=${row.session.agent}` : ""}
+                    {row.session.model ? ` model=${row.session.model}` : ""}
+                    {commandLabel(row.session.sessionID, commands(), now())}
+                  </span>
+                  {rollup ? <span style={{ fg: skin().success }}> [{rollup}]</span> : null}
+                </text>
+              </box>
+            )
+          })}
         </box>
 
         <box
@@ -467,27 +556,73 @@ function Dashboard(props: {
         </box>
 
         <text fg={skin().muted}>
-          ↑/↓ select · enter open · esc/q back · /{props.route} reopens · {props.command} from the palette
+          ↑/↓ select · ←/→ collapse · enter open · esc/q back · /{props.route} reopens · {props.command} from the
+          palette
         </text>
       </box>
     </box>
   )
 }
 
-function SessionDetail(props: { api: TuiPluginApi; state: () => MonitorState; sessionID: string; route: string }) {
+function SessionDetail(props: {
+  api: TuiPluginApi
+  state: () => MonitorState
+  sessionID: () => string
+  trail: () => string[]
+  descend: (sessionID: string) => void
+  back: () => void
+}) {
   const skin = () => skinOf(props.api)
   const [detail, setDetail] = createSignal<SessionDetailState>({ todos: [], messages: [], tokens: 0, cost: 0 })
-  const session = () => props.state().sessions.find((item) => item.sessionID === props.sessionID)
-  const children = () => props.state().sessions.filter((item) => item.parentID === props.sessionID)
+  const session = () => props.state().sessions.find((item) => item.sessionID === props.sessionID())
+  const children = () => props.state().sessions.filter((item) => item.parentID === props.sessionID())
   const claims = () => {
     const identity = session()?.identity
     if (!identity) return []
     return props.state().registry.claims.filter((claim) => claim.status === "active" && claim.agent === identity)
   }
+  const [childIndex, setChildIndex] = createSignal(0)
+  const currentChild = () => Math.min(childIndex(), Math.max(0, children().length - 1))
+  const moveChild = (delta: number) => {
+    const total = children().length
+    if (!total) return
+    setChildIndex(Math.max(0, Math.min(total - 1, currentChild() + delta)))
+  }
+  const descend = () => {
+    const child = children()[currentChild()]
+    if (!child) return
+    props.descend(child.sessionID)
+  }
+  const ancestors = () => {
+    const byID = new Map(props.state().sessions.map((item) => [item.sessionID, item]))
+    const chain: SessionNode[] = []
+    const seen = new Set<string>()
+    let node = session()
+    while (node?.parentID && !seen.has(node.parentID)) {
+      seen.add(node.parentID)
+      const parent = byID.get(node.parentID)
+      if (!parent) break
+      chain.unshift(parent)
+      node = parent
+    }
+    return chain
+  }
+  const breadcrumb = () => {
+    const sessionID = props.sessionID()
+    const ids = props.trail().length ? props.trail() : [...ancestors().map((node) => node.sessionID), sessionID]
+    const byID = new Map(props.state().sessions.map((item) => [item.sessionID, item]))
+    return ids
+      .map((id) => {
+        const node = byID.get(id)
+        return node ? sessionLabel(node) : shortID(id)
+      })
+      .join(" → ")
+  }
+  const subtree = () => rollupDetail(rollupSubtree(props.state().sessions, props.sessionID()))
 
   const refresh = async () => {
     try {
-      setDetail(await loadSessionDetail(props.api, props.sessionID))
+      setDetail(await loadSessionDetail(props.api, props.sessionID()))
     } catch {
       // detail refresh is best-effort
     }
@@ -496,19 +631,32 @@ function SessionDetail(props: { api: TuiPluginApi; state: () => MonitorState; se
   const timer = setInterval(() => void refresh(), 1500)
   onCleanup(() => clearInterval(timer))
 
-  const backKeys: BindingConfig<Renderable, KeyEvent> = { "subplug.back": ["escape", "q"] }
-  const keys = createBindingLookup(backKeys)
+  const detailKeys: BindingConfig<Renderable, KeyEvent> = {
+    "subplug.detail.next": "down",
+    "subplug.detail.prev": "up",
+    "subplug.detail.descend": "return",
+    "subplug.back": ["escape", "q"],
+  }
+  const keys = createBindingLookup(detailKeys)
   const disposeKeys = props.api.keymap.registerLayer({
     priority: 100,
     commands: [
+      { name: "subplug.detail.next", title: "Subplug: next subagent", category: "Plugin", run: () => moveChild(1) },
+      { name: "subplug.detail.prev", title: "Subplug: previous subagent", category: "Plugin", run: () => moveChild(-1) },
+      { name: "subplug.detail.descend", title: "Subplug: open subagent", category: "Plugin", run: () => descend() },
       {
         name: "subplug.back",
-        title: "Subplug: back to dashboard",
+        title: "Subplug: back",
         category: "Plugin",
-        run: () => props.api.route.navigate(props.route),
+        run: () => props.back(),
       },
     ],
-    bindings: keys.gather("subplug.detail", ["subplug.back"]),
+    bindings: keys.gather("subplug.detail", [
+      "subplug.detail.next",
+      "subplug.detail.prev",
+      "subplug.detail.descend",
+      "subplug.back",
+    ]),
   })
   onCleanup(disposeKeys)
 
@@ -544,15 +692,17 @@ function SessionDetail(props: { api: TuiPluginApi; state: () => MonitorState; se
           </text>
           <text fg={skin().muted}>esc/q back</text>
         </box>
+        <text fg={skin().muted}>{breadcrumb()}</text>
         <text fg={skin().text}>
-          {session() ? `${statusMark(session()!.status)} ${sessionLabel(session()!)}` : props.sessionID}
+          {session() ? `${statusMark(session()!.status)} ${sessionLabel(session()!)}` : props.sessionID()}
         </text>
         <text fg={skin().muted}>
-          {props.sessionID} · {session()?.status ?? "unknown"}
+          {shortID(props.sessionID())} · {session()?.status ?? "unknown"}
           {session()?.agent ? ` · agent=${session()!.agent}` : ""}
           {session()?.model ? ` · model=${session()!.model}` : ""}
           {session()?.identity ? ` · ${session()!.identity}` : ""}
         </text>
+        <text fg={skin().success}>{subtree()}</text>
         {session()?.directory ? <text fg={skin().muted}>{session()!.directory}</text> : null}
         {usage() ? <text fg={skin().accent}>{usage()}</text> : null}
 
@@ -596,9 +746,12 @@ function SessionDetail(props: { api: TuiPluginApi; state: () => MonitorState; se
             <text fg={skin().accent}>
               <b>Subagents ({children().length})</b>
             </text>
-            {children().map((child) => (
+            {children().map((child, index) => (
               <text fg={statusColor(skin(), child.status)}>
-                {statusMark(child.status)} {sessionLabel(child)} {child.sessionID.slice(0, 10)}
+                <span style={{ fg: index === currentChild() ? skin().accent : skin().muted }}>
+                  {index === currentChild() ? "▸ " : "  "}
+                </span>
+                {statusMark(child.status)} {sessionLabel(child)} {shortID(child.sessionID)}
               </text>
             ))}
           </box>
@@ -681,6 +834,27 @@ const tui: TuiPlugin = async (api, options) => {
     api.route.navigate(previous.name, previous.params)
   }
 
+  const [detailTrail, setDetailTrail] = createSignal<string[]>([])
+  const openSession = (sessionID: string) => {
+    setDetailTrail([sessionID])
+    api.route.navigate(`${cfg.route}.session`, { sessionID })
+  }
+  const descendSession = (sessionID: string) => {
+    setDetailTrail((trail) => [...trail, sessionID])
+    api.route.navigate(`${cfg.route}.session`, { sessionID })
+  }
+  const backFromDetail = () => {
+    const trail = detailTrail()
+    if (trail.length > 1) {
+      const next = trail.slice(0, -1)
+      setDetailTrail(next)
+      api.route.navigate(`${cfg.route}.session`, { sessionID: next[next.length - 1] ?? next[0] ?? "" })
+      return
+    }
+    setDetailTrail([])
+    closeDashboard()
+  }
+
   try {
     const markerDir = join(cfg.storageDir ?? api.state.path.state, "subplug")
     mkdirSync(markerDir, { recursive: true })
@@ -702,6 +876,7 @@ const tui: TuiPlugin = async (api, options) => {
           route={cfg.route}
           command={cfg.command}
           onClose={closeDashboard}
+          openSession={openSession}
         />
       ),
     },
@@ -711,8 +886,12 @@ const tui: TuiPlugin = async (api, options) => {
         <SessionDetail
           api={api}
           state={state}
-          sessionID={typeof input.params?.sessionID === "string" ? input.params.sessionID : ""}
-          route={cfg.route}
+          sessionID={() =>
+            detailTrail().at(-1) ?? (typeof input.params?.sessionID === "string" ? input.params.sessionID : "")
+          }
+          trail={() => detailTrail()}
+          descend={descendSession}
+          back={backFromDetail}
         />
       ),
     },
