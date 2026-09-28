@@ -51,7 +51,7 @@ the project root, so absolute paths are unambiguous:
 ```json
 {
   "plugin": [
-    ["/path/to/subplug", { "coord": { "injectIdentity": false } }]
+    ["/path/to/subplug"]
   ]
 }
 ```
@@ -78,7 +78,7 @@ Path plugins must default-export an object with `id` plus either `server` or
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `coord.injectIdentity` | `false` | Set `COORD_AGENT_ID` via `shell.env` for coordination-enabled repos: every session gets a distinct `<name>@<host>/<full session id>`, overriding inherited or already populated values (the base is cached per repository). |
+| `coord.injectIdentity` | always on | Accepted for compatibility. In coordination-enabled repos the server always sets `COORD_AGENT_ID` via `shell.env`: every session gets a distinct `<name>@<host>/<full session id>`, overriding inherited or already populated values (the base is cached per repository). |
 | `comms.inject` | `true` | Append pending inbox notices as one synthetic part on the recipient's next turn (strict no-op when the inbox is empty); `false` disables. |
 | `storageDir` | opencode state dir | Override the hub root (also `SUBPLUG_STORAGE_DIR`). |
 | `hubGroup` | project id | Override the hub key so multiple clones/windows can share one hub (combine with a shared `storageDir`; also `SUBPLUG_HUB_GROUP`). Sanitized for the filesystem; degenerate values (`.`, `..`, empty) fall back to `unknown`. |
@@ -110,7 +110,7 @@ up to 200 sessions total, including nested subagents omitted from the initial
 list. Native `task` tool updates also recover parent/child links, agent type,
 and model while work is running; task prompt bodies stay out of the hub.
 
-When identity injection is on, a `git commit`/`git push`/`coord` command whose
+In coordination-enabled repos, a `git commit`/`git push`/`coord` command whose
 staged paths are not covered by the session's claims is recorded as a
 `command.risk` event (read-only check; nothing is ever blocked) and surfaced as
 a TUI toast.

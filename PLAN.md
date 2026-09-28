@@ -51,17 +51,20 @@ child links, agent names, and models even if creation events were missed.
   filesystem hub. Mirror `coord.py`'s journal pattern: `O_APPEND`, one file per
   server, project to a folded snapshot (`coord.py:240-297`); the TUI polls/tails
   to meet the ~1s freshness target.
-- **Identity**: `coord.injectIdentity` defaults to `false`. When enabled, the
-  server plugin sets `COORD_AGENT_ID` via the `shell.env` hook (transient
-  process env only — never writes a file) only when it is unset and the repo is
-  coordination-enabled. Every session gets a distinct
-  `<name>@<host>/<full session id>` and the base is cached per repository.
-  Distinct identities per session are required so claims and leases never
-  collapse two sessions into one principal (`coordination/README.md`
-  convention 3); an earlier root-shared / subagent-`sessionID8` scheme was
-  replaced because roots in one directory collided. The injected value is
-  recorded as a `session.identity` event so readers can join sessions to
-  claims; without injection the mapping falls back to heuristics.
+- **Identity**: in coordination-enabled repos the server plugin always sets
+  `COORD_AGENT_ID` via the `shell.env` hook (transient process env only — never
+  writes a file), overriding inherited or already populated values. Every
+  session gets a distinct `<name>@<host>/<full session id>` and the base is
+  cached per repository. Distinct identities per session are required so claims
+  and leases never collapse two sessions into one principal
+  (`coordination/README.md` convention 3); an earlier root-shared /
+  subagent-`sessionID8` scheme was replaced because roots in one directory
+  collided. The injected value is recorded as a `session.identity` event so
+  readers can join sessions to claims; without injection the mapping falls back
+  to heuristics. `coord.injectIdentity` is accepted for compatibility but no
+  longer gates injection: lease enforcement and commit-coverage both key on the
+  per-session identity, so an off switch would leave shell `coord.py` commands
+  unable to match or release the plugin's lease holder.
 - **UI order**: sidebar slot first, dashboard route second, toasts/attention
   third.
 
@@ -421,6 +424,31 @@ Four review findings fixed post-P6, one per commit (baseline 80 tests):
 | Non-positive state-dir timeouts | `stateDirTimeoutMs` ignores `<= 0`/non-finite env values and keeps the 1500 ms default; exported for a direct unit test. | `test/server.test.ts` timeout table |
 | Global record limit | `readEventRecords` keeps the globally newest `maxRecords` across all files with a bounded `(ts, seq)` min-heap instead of stopping in lexical file order; `maxRecords: 0` returns `[]`. | `test/hub.test.ts` cross-file limit + tie tests |
 | Stale comms fold | `EventTail` seeds byte-offset/identity cursors per hub file before the initial replay and reads only new bytes on `chat.message`; rotation/shrink resets, partial lines are held, `msgID` dedupe makes re-reads idempotent. | `test/hub.test.ts` EventTail tests; `test/server.test.ts` post-bootstrap pointer injection; `--probe-inject` |
+
+## Edit-lease drill findings (2026-09-28)
+
+The live blocked-edit acceptance was driven headlessly with a persistent
+`opencode serve` plus two attached sessions (`deepseek-v4.1-flash`), because a
+one-shot `opencode run` exits its server and makes the lease's recorded pid
+dead, so a competitor replaces the lease instead of being denied.
+
+- Verified live: identity override with an inherited `COORD_AGENT_ID` (both
+  sessions got distinct `<name>@<host>/<full session id>` values), `write` and
+  `edit` denial with the exact `is leased by` message, same-holder refresh,
+  `unlock` from the holder's own shell identity, and re-acquire after release.
+- `apply_patch` is exposed by opencode only to models whose id contains `gpt-`
+  (the runtime swaps `edit`/`write` for it), and the available gpt models were
+  access-disabled on this machine, so the delete/move denial legs were driven
+  through the real `tool.execute.before` hook against the real `coord.py`
+  instead of a model call.
+- Move support is engine-dependent: the runtime bundle carries one patch engine
+  that applies `*** Move to:` moves and another that rejects them ("apply_patch
+  moves are not supported yet"); confirm which engine runs `apply_patch` before
+  leaning on move gating.
+- Identity coherence fix: `shell.env` and commit-coverage now run in every
+  coordination-enabled repo regardless of `coord.injectIdentity`, so shell
+  `coord.py` commands resolve to the same per-session holder the plugin writes
+  into leases.
 
 ## Handoff prompt for a fresh window
 

@@ -96,6 +96,7 @@ async function startPlugin(
   options: {
     pathGetFailures?: number
     pathGetHangs?: boolean
+    injectIdentity?: boolean
     stateFromClient?: boolean
     hubGroup?: string
     sessions?: FakeSession[]
@@ -144,7 +145,7 @@ async function startPlugin(
     serverUrl: new URL("http://127.0.0.1:1"),
     $: Bun.$,
   } as unknown as PluginInput
-  const pluginOptions: Record<string, unknown> = { coord: { injectIdentity: true } }
+  const pluginOptions: Record<string, unknown> = { coord: { injectIdentity: options.injectIdentity ?? true } }
   if (!options.stateFromClient) pluginOptions.storageDir = stateDir
   if (options.hubGroup) pluginOptions.hubGroup = options.hubGroup
   return serverModule.server(input, pluginOptions)
@@ -205,6 +206,22 @@ describe("server plugin coverage risk", () => {
     )
 
     expect(hubEvents(stateDir).filter((event) => event.kind === "command.risk")).toEqual([])
+  })
+
+  test("keeps coverage risk active when the injectIdentity option is disabled", async () => {
+    const repo = seedRepo(["covered.txt"], "ses_roottest00004")
+    const stateDir = tempDir("state-")
+    const hooks = await startPlugin(repo, stateDir, { injectIdentity: false })
+    stage(repo)
+
+    await hooks["tool.execute.before"]?.(
+      { tool: "bash", sessionID: "ses_roottest00004", callID: "call-4" },
+      { args: { command: 'git commit -m "test"' } },
+    )
+
+    const risks = hubEvents(stateDir).filter((event) => event.kind === "command.risk")
+    expect(risks.length).toBe(1)
+    expect(risks[0]?.refs?.uncovered).toBe(1)
   })
 })
 
@@ -359,6 +376,30 @@ describe("server plugin identity", () => {
         (event) => event.sessionID === childID && event.refs?.identity === expectedChildIdentity,
       ),
     ).toBe(true)
+  })
+
+  test("injects per-session identity when the option is disabled", async () => {
+    const repo = seedRepo([])
+    const stateDir = tempDir("state-")
+    const hooks = await startPlugin(repo, stateDir, { injectIdentity: false })
+    const sessionID = "ses_option_disabled"
+    const output = { env: {} as Record<string, string> }
+
+    await hooks["shell.env"]?.({ cwd: repo, sessionID }, output)
+
+    expect(output.env.COORD_AGENT_ID).toBe(`${identity()}/${sessionID}`)
+  })
+
+  test("does not inject identity outside coordination-enabled repositories", async () => {
+    const repo = tempDir("plain-")
+    git(repo, ["init", "-q"])
+    git(repo, ["config", "user.name", "Harness Agent"])
+    const hooks = await startPlugin(repo, tempDir("state-"), { injectIdentity: false })
+    const output = { env: {} as Record<string, string> }
+
+    await hooks["shell.env"]?.({ cwd: repo, sessionID: "ses_plain_repo" }, output)
+
+    expect(output.env.COORD_AGENT_ID).toBeUndefined()
   })
 })
 

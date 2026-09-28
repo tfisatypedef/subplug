@@ -735,7 +735,7 @@ const server: Plugin = async (input, options) => {
     sessionID: string | undefined,
     category: string,
   ): Promise<void> => {
-    if (!cfg.injectIdentity || !sessionID) return
+    if (!sessionID) return
     const identity = await identityFor(repoRoot, sessionID)
     if (!identity) return
     const paths = await stagedPaths(repoRoot)
@@ -828,7 +828,6 @@ const server: Plugin = async (input, options) => {
 
     "shell.env": async (shellInput, output) => {
       try {
-        if (!cfg.injectIdentity) return
         const sessionID = shellInput.sessionID
         if (!sessionID) return
         const root = repoRootFor(input.worktree ?? input.directory)
