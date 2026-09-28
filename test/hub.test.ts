@@ -327,15 +327,13 @@ describe("fallbackStateDir", () => {
 })
 
 describe("agentIdentity", () => {
-  test("roots share the base identity while subagents are unique and stable", () => {
-    expect(agentIdentity("name@host", "ses_aaaabbbb", false)).toBe("name@host")
-
-    const first = agentIdentity("name@host", "ses_aaaabbbb", true)
-    const second = agentIdentity("name@host", "ses_ccccdddd", true)
-    expect(first).toBe("name@host/ses_aaaa")
-    expect(second).toBe("name@host/ses_cccc")
+  test("every session gets its full id appended to the cached base", () => {
+    const first = agentIdentity("name@host", "ses_aaaabbbb")
+    const second = agentIdentity("name@host", "ses_ccccdddd")
+    expect(first).toBe("name@host/ses_aaaabbbb")
+    expect(second).toBe("name@host/ses_ccccdddd")
     expect(first).not.toBe(second)
-    expect(agentIdentity("name@host", "ses_aaaabbbb", true)).toBe(first)
+    expect(agentIdentity("name@host", "ses_aaaabbbb")).toBe(first)
   })
 })
 

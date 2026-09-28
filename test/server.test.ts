@@ -42,7 +42,7 @@ function identity(): string {
   return `Harness Agent@${hostname()}`
 }
 
-function seedRepo(claimFiles: string[]): string {
+function seedRepo(claimFiles: string[], sessionID?: string): string {
   const repo = tempDir("repo-")
   mkdirSync(join(repo, "coordination", "claims"), { recursive: true })
   git(repo, ["init", "-q"])
@@ -52,7 +52,7 @@ function seedRepo(claimFiles: string[]): string {
   const claim = {
     event_id: "server-test-claim",
     kind: "claim",
-    agent: identity(),
+    agent: sessionID ? `${identity()}/${sessionID}` : identity(),
     issued: "2026-09-27T10:00:00Z",
     expires: "2099-01-01T00:00:00Z",
     claim_id: "claim-server-test",
@@ -162,7 +162,7 @@ function stage(repo: string): void {
 
 describe("server plugin coverage risk", () => {
   test("records command.risk for a commit with uncovered staged paths", async () => {
-    const repo = seedRepo(["covered.txt"])
+    const repo = seedRepo(["covered.txt"], "ses_roottest00001")
     const stateDir = tempDir("state-")
     const hooks = await startPlugin(repo, stateDir)
     stage(repo)
@@ -180,7 +180,7 @@ describe("server plugin coverage risk", () => {
   })
 
   test("records no risk when every staged path is covered", async () => {
-    const repo = seedRepo(["covered.txt", "uncovered.txt"])
+    const repo = seedRepo(["covered.txt", "uncovered.txt"], "ses_roottest00002")
     const stateDir = tempDir("state-")
     const hooks = await startPlugin(repo, stateDir)
     stage(repo)
@@ -294,10 +294,11 @@ describe("server plugin state dir", () => {
 })
 
 describe("server plugin identity", () => {
-  test("roots stay shared while subagents get a unique suffix", async () => {
+  test("every session appends its full session id to the base", async () => {
     const rootID = "ses_root00000000001"
     const childID = "ses_child0000000001"
-    const expectedChildIdentity = `${identity()}/${childID.slice(0, 8)}`
+    const expectedRootIdentity = `${identity()}/${rootID}`
+    const expectedChildIdentity = `${identity()}/${childID}`
 
     const repo = seedRepo([])
     const stateDir = tempDir("state-")
@@ -316,15 +317,19 @@ describe("server plugin identity", () => {
 
     const rootOutput = { env: {} as Record<string, string> }
     await hooks["shell.env"]?.({ cwd: repo, sessionID: rootID }, rootOutput)
-    expect(rootOutput.env.COORD_AGENT_ID).toBe(identity())
+    expect(rootOutput.env.COORD_AGENT_ID).toBe(expectedRootIdentity)
 
     const childOutput = { env: {} as Record<string, string> }
     await hooks["shell.env"]?.({ cwd: repo, sessionID: childID }, childOutput)
     expect(childOutput.env.COORD_AGENT_ID).toBe(expectedChildIdentity)
-    expect(childOutput.env.COORD_AGENT_ID).not.toBe(identity())
+    expect(childOutput.env.COORD_AGENT_ID).not.toBe(rootOutput.env.COORD_AGENT_ID)
 
     const identities = hubEvents(stateDir).filter((event) => event.kind === "session.identity")
-    expect(identities.some((event) => event.sessionID === rootID)).toBe(true)
+    expect(
+      identities.some(
+        (event) => event.sessionID === rootID && event.refs?.identity === expectedRootIdentity,
+      ),
+    ).toBe(true)
     expect(
       identities.some(
         (event) => event.sessionID === childID && event.refs?.identity === expectedChildIdentity,

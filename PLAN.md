@@ -54,12 +54,14 @@ child links, agent names, and models even if creation events were missed.
 - **Identity**: `coord.injectIdentity` defaults to `false`. When enabled, the
   server plugin sets `COORD_AGENT_ID` via the `shell.env` hook (transient
   process env only — never writes a file) only when it is unset and the repo is
-  coordination-enabled. Values follow coord's convention: root sessions share
-  `<name>@<host>`; subagents get `<name>@<host>/<sessionID8>` — a unique,
-  stable child id. Depth-based `/wN` was rejected because sibling subagents
-  would collide, which `coordination/README.md` convention 3 forbids. The
-  injected value is recorded as a `session.identity` event so readers can join
-  sessions to claims; without injection the mapping falls back to heuristics.
+  coordination-enabled. Every session gets a distinct
+  `<name>@<host>/<full session id>` and the base is cached per repository.
+  Distinct identities per session are required so claims and leases never
+  collapse two sessions into one principal (`coordination/README.md`
+  convention 3); an earlier root-shared / subagent-`sessionID8` scheme was
+  replaced because roots in one directory collided. The injected value is
+  recorded as a `session.identity` event so readers can join sessions to
+  claims; without injection the mapping falls back to heuristics.
 - **UI order**: sidebar slot first, dashboard route second, toasts/attention
   third.
 
@@ -407,6 +409,7 @@ logic; the harness only proves hooks fire and pointers land.
 | P6 cross-process + portability | partial | state-dir timeout guard + hang test; multi-server fold test; `hubGroup` in server + TUI; CI (`.github/workflows/ci.yml`), `.gitattributes`, LICENSE, `bun.lock`, engines already present; web view not started |
 | P6 review fixes | done | degenerate hub keys -> `unknown`; non-positive timeout guard; globally newest record limit; `EventTail` fresh-comms injection; spike/`--tui`/`--probe-inject` green |
 | TUI layout + sidebar affordance | done | rows/panels constrained to full width, conversation clipped; explicit `flexShrink={0}` on labels/rows/panels stops auto-shrink overlap on short terminals (`flexShrink` defaults to 1 for auto dimensions); sidebar hint + click-to-open; `test/tui.test.tsx` static layout/click/short-terminal tests (note: `@opentui/solid` `testRender` is snapshot-only, async updates do not repaint) |
+| Edit-lease enforcement | done | auto-acquire/refresh via `tools/coord.py lock` for `edit`/`write`/`apply_patch`; `apply_patch` scans add/update/delete plus both sides of a move; denial thrown from `tool.execute.before` outside the monitoring catch; full-session-id identity with a per-repository base cache; `test/leases.test.ts` + `test/lease-enforcement.test.ts` |
 
 ## P6 review fixes
 
@@ -427,7 +430,7 @@ Four review findings fixed post-P6, one per commit (baseline 80 tests):
 > `swarm_status inbox: true` pull with `comms.seen`; inbox-notice injection in
 > `chat.message` (`comms.inject`, in-memory comms fold, dedupe/TTL/byte caps,
 > marks `comms.delivered`); and the TUI `m` composer plus the detail Inbox
-> panel. Automated gate: `bun install; bun run typecheck; bun test` (97 pass);
+> panel. Automated gate: `bun install; bun run typecheck; bun test` (125 pass);
 > `bun run scripts/dev-harness.ts`; `bun run scripts/dev-harness.ts --tui`;
 > `--probe-comms`; `--probe-tui-state`; `--probe-inject`. The user still runs
 > the README manual checks: `--demo --keep` + `opencode` for the visual
@@ -445,8 +448,13 @@ Four review findings fixed post-P6, one per commit (baseline 80 tests):
 > a click/`ctrl+alt+a`/`/subplug` open hint; explicit `flexShrink={0}` on
 > detail labels/rows/panels prevents auto-shrink row overlap on short terminals;
 > `test/tui.test.tsx` covers the static layout, the sidebar click, and the
-> short-terminal clipping. Remaining P6: the optional web view and the publish
-> decision.
+> short-terminal clipping. Edit-lease enforcement is in: `edit`/`write`/
+> `apply_patch` auto-acquire/refresh exact-path leases through the repo's
+> `tools/coord.py`, a conflict from another session is thrown from
+> `tool.execute.before` (outside the monitoring catch), `apply_patch` scans
+> add/update/delete and both sides of a move, and every session now identifies
+> as `<name>@<host>/<full session id>` with the base cached per repository.
+> Remaining P6: the optional web view and the publish decision.
 > Keep using the flat client for v1 sessions (never the v2 `/api/session`
 > store), read transcripts from `api.state.session.messages()`/`part()` when
 > the store has content, keep `client.path.get()` out of eager plugin init, and

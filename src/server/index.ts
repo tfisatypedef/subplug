@@ -13,6 +13,7 @@ import { applyCommsRecord, buildInboxBlock, inboxFor, resolveTargets } from "../
 import { FollowUpConfirmationRequired, followUpError, sendFollowUp, type FollowUpTransport } from "../shared/follow-up.ts"
 import { fallbackStateDir, hubRoot, snapshotFile } from "../hub/paths.ts"
 import { findRepoRoot, isCoordinationEnabled } from "../coord/repo.ts"
+import { enforceLeases, relativeLeasePath, toolLeasePaths } from "../coord/leases.ts"
 import { buildRegistryState, coverageErrors, readAdoptionPaths } from "../coord/claims.ts"
 import type { ClaimRecord, CommsPointer, MonitorState, RegistryState, RiskRecord } from "../shared/types.ts"
 
@@ -396,7 +397,7 @@ const server: Plugin = async (input, options) => {
   const comms = new Map<string, CommsPointer>()
   const commsTail = new EventTail()
   const repoRootCache = new Map<string, string | undefined>()
-  let identityBaseCache: string | undefined
+  const identityBaseCache = new Map<string, string>()
   let snapshotTimer: ReturnType<typeof setTimeout> | undefined
 
   const ensure = async (): Promise<{ hubDir: string; log: EventLog }> => {
@@ -700,19 +701,19 @@ const server: Plugin = async (input, options) => {
   }
 
   const identityBase = async (repoRoot: string): Promise<string> => {
-    if (identityBaseCache) return identityBaseCache
+    const cached = identityBaseCache.get(repoRoot)
+    if (cached) return cached
     const name = await gitUserName(input.$ as unknown as ShellRunner | undefined, repoRoot)
     const host = hostname()
-    identityBaseCache = `${name || "agent"}@${host || "host"}`
-    return identityBaseCache
+    const base = `${name || "agent"}@${host || "host"}`
+    identityBaseCache.set(repoRoot, base)
+    return base
   }
 
   const identityFor = async (repoRoot: string, sessionID: string | undefined): Promise<string | undefined> => {
     if (!sessionID) return undefined
     const base = await identityBase(repoRoot)
-    if (!base) return undefined
-    const node = sessions.get(sessionID)
-    return agentIdentity(base, sessionID, !!node?.parentID)
+    return agentIdentity(base, sessionID)
   }
 
   const stagedPaths = async (repoRoot: string): Promise<string[]> => {
@@ -752,6 +753,22 @@ const server: Plugin = async (input, options) => {
     })
   }
 
+  const enforceEditLeases = async (
+    tool: string,
+    args: Record<string, unknown>,
+    sessionID: string,
+  ): Promise<void> => {
+    const root = repoRootFor(input.worktree ?? input.directory)
+    if (!root || !isCoordinationEnabled(root)) return
+    const paths = toolLeasePaths(tool, args)
+      .map((path) => relativeLeasePath(root, path))
+      .filter((path): path is string => Boolean(path))
+    if (!paths.length) return
+    const holder = await identityFor(root, sessionID)
+    if (!holder) return
+    await enforceLeases({ repoRoot: root, holder, sessionID, pid: process.pid, paths })
+  }
+
   const hooks: Hooks = {
     event: async ({ event }) => {
       try {
@@ -782,6 +799,9 @@ const server: Plugin = async (input, options) => {
     },
 
     "tool.execute.before": async (toolInput, output) => {
+      // A lease denial must escape this hook; keep it outside the monitoring
+      // catch below so a thrown conflict actually blocks the tool call.
+      await enforceEditLeases(toolInput.tool, asRecord(output.args), toolInput.sessionID)
       try {
         if (toolInput.tool !== "bash") return
         const command = asRecord(output.args).command

@@ -78,7 +78,7 @@ Path plugins must default-export an object with `id` plus either `server` or
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `coord.injectIdentity` | `false` | Set `COORD_AGENT_ID` via `shell.env` for coordination-enabled repos: roots share `<name>@<host>`; subagents get a unique `<name>@<host>/<sessionID8>`. |
+| `coord.injectIdentity` | `false` | Set `COORD_AGENT_ID` via `shell.env` for coordination-enabled repos: every session gets a distinct `<name>@<host>/<full session id>` (the base is cached per repository). |
 | `comms.inject` | `true` | Append pending inbox notices as one synthetic part on the recipient's next turn (strict no-op when the inbox is empty); `false` disables. |
 | `storageDir` | opencode state dir | Override the hub root (also `SUBPLUG_STORAGE_DIR`). |
 | `hubGroup` | project id | Override the hub key so multiple clones/windows can share one hub (combine with a shared `storageDir`; also `SUBPLUG_HUB_GROUP`). Sanitized for the filesystem; degenerate values (`.`, `..`, empty) fall back to `unknown`. |
@@ -114,6 +114,14 @@ When identity injection is on, a `git commit`/`git push`/`coord` command whose
 staged paths are not covered by the session's claims is recorded as a
 `command.risk` event (read-only check; nothing is ever blocked) and surfaced as
 a TUI toast.
+
+In coordination-enabled repos with `tools/coord.py`, `edit`, `write`, and
+`apply_patch` calls auto-acquire (or refresh) an exact-path edit lease for the
+calling session before the tool runs; a path leased by another session denies
+the call with the lease message. `apply_patch` checks every add/update/delete
+path plus both sides of a move. The denial is thrown from `tool.execute.before`,
+not swallowed by the monitoring catch. Shell commands that mutate files are not
+gated, and leases live in the per-worktree git directory, never in git.
 
 Hub layout: `<stateDir>/subplug/<hubKey>/events.<serverID>.jsonl` plus a folded
 `snapshot.json`, where `<hubKey>` is the project id unless `hubGroup` is set.
@@ -257,7 +265,7 @@ Then inspect the hub without leaving the repo:
 bun run scripts/dev-harness.ts --inspect
 ```
 
-Expected: the root session keeps `Harness Agent@<host>`; the child shows
+Expected: the root identity is `Harness Agent@<host>/<rootID>`; the child shows
 `parent=<root id>`, `kind=subagent`, and identity
-`Harness Agent@<host>/<childID[0:8]>`; claims list `⇄ <session>` when the
+`Harness Agent@<host>/<childID>`; claims list `⇄ <session>` when the
 session identity matches a claim's agent.

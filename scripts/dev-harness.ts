@@ -327,7 +327,7 @@ function seedDemoHub(hubDir: string): void {
     serverID,
     sessionID: childID,
     kind: "session.identity",
-    refs: { identity: `${harnessIdentity}/${childID.slice(0, 8)}` },
+    refs: { identity: `${harnessIdentity}/${childID}` },
   })
   push({ ts: now - 30_000, serverID, sessionID: childID, kind: "session.idle" })
   push({
@@ -794,13 +794,14 @@ async function runSpike(): Promise<void> {
         const shellBody = (await shellResponse.json().catch(() => undefined)) as unknown
         const strings = collectStrings(shellBody)
         const probe = strings.find((value) => value.includes("Harness Agent@"))
+        const expectedRootSuffix = `/${session.id}`
         log(`root identity probe: HTTP ${shellResponse.status} identity=${probe ?? "(not found)"}`)
         if (!shellResponse.ok) {
           failures.push(`identity probe failed: HTTP ${shellResponse.status}`)
         } else if (!probe) {
           failures.push("shell.env identity probe did not expose COORD_AGENT_ID=Harness Agent@<host>")
-        } else if (probe.includes("/")) {
-          failures.push(`root identity should be shared, got ${probe}`)
+        } else if (!probe.trim().endsWith(expectedRootSuffix)) {
+          failures.push(`root identity did not end with ${expectedRootSuffix}, got ${probe}`)
         }
         if (hubDir) {
           const recordedIdentity = await waitFor(
@@ -838,7 +839,7 @@ async function runSpike(): Promise<void> {
             if (!recorded) failures.push("child session.created missing")
             await sleep(300)
           }
-          const expectedSuffix = `/${childSession.id.slice(0, 8)}`
+          const expectedSuffix = `/${childSession.id}`
           const childShell = await fetch(`${base}/session/${childSession.id}/shell`, {
             method: "POST",
             headers: { "content-type": "application/json" },
