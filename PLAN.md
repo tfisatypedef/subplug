@@ -397,7 +397,7 @@ logic; the harness only proves hooks fire and pointers land.
 | Probe: injection part persistence + `comms.delivered` | done | `--probe-inject` (see results) |
 | P6 cross-process + portability | partial | state-dir timeout guard + hang test; multi-server fold test; `hubGroup` in server + TUI; CI (`.github/workflows/ci.yml`), `.gitattributes`, LICENSE, `bun.lock`, engines already present; web view not started |
 | P6 review fixes | done | degenerate hub keys -> `unknown`; non-positive timeout guard; globally newest record limit; `EventTail` fresh-comms injection; spike/`--tui`/`--probe-inject` green |
-| TUI layout + sidebar affordance | done | rows/panels constrained to full width, conversation clipped; sidebar hint + click-to-open; `test/tui.test.tsx` static layout/click tests (note: `@opentui/solid` `testRender` is snapshot-only, async updates do not repaint) |
+| TUI layout + sidebar affordance | done | rows/panels constrained to full width, conversation clipped; explicit `flexShrink={0}` on labels/rows/panels stops auto-shrink overlap on short terminals (`flexShrink` defaults to 1 for auto dimensions); sidebar hint + click-to-open; `test/tui.test.tsx` static layout/click/short-terminal tests (note: `@opentui/solid` `testRender` is snapshot-only, async updates do not repaint) |
 
 ## P6 review fixes
 
@@ -418,7 +418,7 @@ Four review findings fixed post-P6, one per commit (baseline 80 tests):
 > `swarm_status inbox: true` pull with `comms.seen`; inbox-notice injection in
 > `chat.message` (`comms.inject`, in-memory comms fold, dedupe/TTL/byte caps,
 > marks `comms.delivered`); and the TUI `m` composer plus the detail Inbox
-> panel. Automated gate: `bun install; bun run typecheck; bun test` (95 pass);
+> panel. Automated gate: `bun install; bun run typecheck; bun test` (97 pass);
 > `bun run scripts/dev-harness.ts`; `bun run scripts/dev-harness.ts --tui`;
 > `--probe-comms`; `--probe-tui-state`; `--probe-inject`. The user still runs
 > the README manual checks: `--demo --keep` + `opencode` for the visual
@@ -433,9 +433,11 @@ Four review findings fixed post-P6, one per commit (baseline 80 tests):
 > `(ts, seq)` heap, and `EventTail` tails only new hub bytes before inbox
 > injection (seeded before the initial replay). The TUI rows/panels are
 > width-constrained, the conversation panel clips overflow, and the sidebar has
-> a click/`ctrl+alt+a`/`/subplug` open hint; `test/tui.test.tsx` covers the
-> static layout and the sidebar click. Remaining P6: the optional web view and
-> the publish decision.
+> a click/`ctrl+alt+a`/`/subplug` open hint; explicit `flexShrink={0}` on
+> detail labels/rows/panels prevents auto-shrink row overlap on short terminals;
+> `test/tui.test.tsx` covers the static layout, the sidebar click, and the
+> short-terminal clipping. Remaining P6: the optional web view and the publish
+> decision.
 > Keep using the flat client for v1 sessions (never the v2 `/api/session`
 > store), read transcripts from `api.state.session.messages()`/`part()` when
 > the store has content, keep `client.path.get()` out of eager plugin init, and
