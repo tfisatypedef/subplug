@@ -107,11 +107,12 @@ function resolveOptions(options?: Record<string, unknown>): SubplugOptions {
 }
 
 const STATE_DIR_ATTEMPTS = 3
-const STATE_DIR_TIMEOUT_MS = 1500
+export const STATE_DIR_TIMEOUT_MS = 1500
 const STATE_DIR_RETRY_MS = 150
 
-function stateDirTimeoutMs(): number {
-  return toNumber(process.env.SUBPLUG_STATE_DIR_TIMEOUT_MS) ?? STATE_DIR_TIMEOUT_MS
+export function stateDirTimeoutMs(raw: unknown = process.env.SUBPLUG_STATE_DIR_TIMEOUT_MS): number {
+  const value = toNumber(raw)
+  return value !== undefined && value > 0 ? value : STATE_DIR_TIMEOUT_MS
 }
 
 function withTimeout<Value>(promise: Promise<Value>, ms: number): Promise<Value> {

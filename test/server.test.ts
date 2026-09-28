@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { hostname, tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Hooks, PluginInput } from "@opencode-ai/plugin"
-import serverModule from "../src/server/index.ts"
+import serverModule, { STATE_DIR_TIMEOUT_MS, stateDirTimeoutMs } from "../src/server/index.ts"
 import { readEventRecords } from "../src/hub/append.ts"
 import { fallbackStateDir, hubRoot } from "../src/hub/paths.ts"
 import type { EventRecord } from "../src/shared/types.ts"
@@ -202,6 +202,14 @@ describe("server plugin coverage risk", () => {
 })
 
 describe("server plugin state dir", () => {
+  test("ignores non-positive or non-numeric timeouts", () => {
+    for (const raw of [undefined, "", "abc", "0", "-5", "Infinity"]) {
+      expect(stateDirTimeoutMs(raw)).toBe(STATE_DIR_TIMEOUT_MS)
+    }
+    expect(stateDirTimeoutMs("50")).toBe(50)
+    expect(stateDirTimeoutMs(250)).toBe(250)
+  })
+
   test("retries path.get before falling back", async () => {
     const repo = seedRepo([])
     const stateDir = tempDir("state-")
