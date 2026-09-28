@@ -6,8 +6,11 @@ export const EVENTS_SUFFIX = ".jsonl"
 export const SNAPSHOT_FILE = "snapshot.json"
 
 export function sanitizeProjectID(projectID: string): string {
-  const safe = projectID.replace(/[^A-Za-z0-9._@-]+/g, "_").replace(/^_+|_+$/g, "")
-  return safe || "unknown"
+  const safe = projectID
+    .replace(/[^A-Za-z0-9._@-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/[. ]+$/g, "")
+  return safe && safe !== "." && safe !== ".." ? safe : "unknown"
 }
 
 export function hubRoot(stateDir: string, projectID: string): string {

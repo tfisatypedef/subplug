@@ -7,7 +7,7 @@ import { foldSessions, sessionDepth } from "../src/hub/fold.ts"
 import { inboxFor } from "../src/hub/comms.ts"
 import { agentIdentity } from "../src/hub/identity.ts"
 import { joinClaimsToSessions, lastCommandBySession, readMonitorState } from "../src/hub/monitor.ts"
-import { fallbackStateDir, hubRoot } from "../src/hub/paths.ts"
+import { fallbackStateDir, hubRoot, sanitizeProjectID } from "../src/hub/paths.ts"
 import type { EventRecord } from "../src/shared/types.ts"
 
 function tempDir(): string {
@@ -152,6 +152,28 @@ describe("lastCommandBySession", () => {
 
     expect(commands.get("a")).toEqual({ ts: 3, category: "git-push", summary: "second" })
     expect(commands.get("b")?.category).toBe("git-commit")
+  })
+})
+
+describe("sanitizeProjectID", () => {
+  test("maps degenerate ids to unknown", () => {
+    expect(sanitizeProjectID("")).toBe("unknown")
+    expect(sanitizeProjectID(".")).toBe("unknown")
+    expect(sanitizeProjectID("..")).toBe("unknown")
+    expect(sanitizeProjectID("...")).toBe("unknown")
+    expect(sanitizeProjectID(". ")).toBe("unknown")
+  })
+
+  test("keeps separators inside the name", () => {
+    expect(sanitizeProjectID("../evil")).toBe(".._evil")
+    expect(sanitizeProjectID("a/b")).toBe("a_b")
+    expect(sanitizeProjectID("a\\b")).toBe("a_b")
+  })
+
+  test("leaves realistic ids unchanged", () => {
+    expect(sanitizeProjectID("subplug-test-project")).toBe("subplug-test-project")
+    expect(sanitizeProjectID("0f3a9c1b2d4e5f60")).toBe("0f3a9c1b2d4e5f60")
+    expect(sanitizeProjectID("name_1.2@host")).toBe("name_1.2@host")
   })
 })
 
