@@ -64,10 +64,38 @@ function seedRepo(claimFiles: string[]): string {
   return repo
 }
 
+type FakeSession = {
+  id: string
+  projectID?: string
+  directory?: string
+  parentID?: string
+  title?: string
+  time?: { created?: number; updated?: number }
+}
+
+type FakeMessages = Record<string, Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }>>
+type FakeTodos = Record<string, Array<{ content: string; status: string }>>
+
+async function waitFor(predicate: () => boolean, timeoutMs = 4000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return true
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  return false
+}
+
 async function startPlugin(
   repo: string,
   stateDir: string,
-  options: { pathGetFailures?: number; stateFromClient?: boolean } = {},
+  options: {
+    pathGetFailures?: number
+    stateFromClient?: boolean
+    sessions?: FakeSession[]
+    statuses?: Record<string, { type: string }>
+    messages?: FakeMessages
+    todos?: FakeTodos
+  } = {},
 ): Promise<Hooks> {
   delete process.env.COORD_AGENT_ID
   let remainingFailures = options.pathGetFailures ?? 0
@@ -81,6 +109,12 @@ async function startPlugin(
           }
           return { data: { state: stateDir } }
         },
+      },
+      session: {
+        list: async () => ({ data: options.sessions ?? [] }),
+        status: async () => ({ data: options.statuses ?? {} }),
+        todo: async (request: { path: { id: string } }) => ({ data: options.todos?.[request.path.id] ?? [] }),
+        messages: async (request: { path: { id: string } }) => ({ data: options.messages?.[request.path.id] ?? [] }),
       },
     },
     project: { id: PROJECT_ID },
@@ -227,5 +261,130 @@ describe("server plugin identity", () => {
         (event) => event.sessionID === childID && event.refs?.identity === expectedChildIdentity,
       ),
     ).toBe(true)
+  })
+})
+
+describe("server plugin baseline import", () => {
+  test("imports existing sessions and statuses at bootstrap", async () => {
+    const repo = seedRepo([])
+    const stateDir = tempDir("state-")
+    const now = Date.now()
+    await startPlugin(repo, stateDir, {
+      sessions: [
+        {
+          id: "ses_baseline_root01",
+          projectID: PROJECT_ID,
+          directory: repo,
+          title: "existing root",
+          time: { created: now - 60_000, updated: now - 30_000 },
+        },
+        {
+          id: "ses_baseline_child1",
+          projectID: PROJECT_ID,
+          directory: repo,
+          parentID: "ses_baseline_root01",
+          title: "existing child",
+          time: { created: now - 50_000, updated: now - 20_000 },
+        },
+      ],
+      statuses: { ses_baseline_root01: { type: "busy" } },
+    })
+
+    const ready = await waitFor(() => hubEvents(stateDir).some((event) => event.sessionID === "ses_baseline_child1"))
+    expect(ready).toBe(true)
+    const events = hubEvents(stateDir)
+    expect(
+      events.some(
+        (event) =>
+          event.kind === "session.status" && event.sessionID === "ses_baseline_root01" && event.refs?.status === "busy",
+      ),
+    ).toBe(true)
+    const child = events.find((event) => event.sessionID === "ses_baseline_child1")
+    expect(child?.parentID).toBe("ses_baseline_root01")
+    expect(child?.refs?.title).toBe("existing child")
+  })
+
+  test("skips sessions older than maxAgeMs", async () => {
+    const repo = seedRepo([])
+    const stateDir = tempDir("state-")
+    const stale = Date.now() - 25 * 60 * 60 * 1000
+    await startPlugin(repo, stateDir, {
+      sessions: [
+        {
+          id: "ses_stale00000001",
+          projectID: PROJECT_ID,
+          directory: repo,
+          title: "ancient",
+          time: { created: stale, updated: stale },
+        },
+      ],
+    })
+
+    const serverStarted = await waitFor(() => hubEvents(stateDir).some((event) => event.kind === "server.start"))
+    expect(serverStarted).toBe(true)
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    expect(hubEvents(stateDir).some((event) => event.sessionID === "ses_stale00000001")).toBe(false)
+  })
+})
+
+describe("server plugin swarm_status detail", () => {
+  type ToolExecutor = {
+    execute: (
+      args: Record<string, unknown>,
+      context: Record<string, unknown>,
+    ) => Promise<{ output: string; metadata?: Record<string, unknown> }>
+  }
+
+  function swarmTool(hooks: Hooks): ToolExecutor {
+    return (hooks.tool as unknown as Record<string, ToolExecutor>)["swarm_status"]!
+  }
+
+  test("returns session detail and gates messages behind the messages arg", async () => {
+    const repo = seedRepo([])
+    const stateDir = tempDir("state-")
+    const now = Date.now()
+    const hooks = await startPlugin(repo, stateDir, {
+      sessions: [
+        { id: "ses_detail0000001", projectID: PROJECT_ID, directory: repo, title: "detail root", time: { updated: now } },
+      ],
+      todos: { ses_detail0000001: [{ content: "review claims", status: "in_progress" }] },
+      messages: {
+        ses_detail0000001: [
+          {
+            info: { role: "assistant", modelID: "test/model" },
+            parts: [
+              { type: "text", text: "working on it" },
+              { type: "tool", tool: "bash", state: { status: "completed" } },
+            ],
+          },
+        ],
+      },
+    })
+
+    const seeded = await waitFor(() => hubEvents(stateDir).some((event) => event.sessionID === "ses_detail0000001"))
+    expect(seeded).toBe(true)
+    const tool = swarmTool(hooks)
+
+    const withoutMessages = await tool.execute({ session: "ses_detail0000001" }, { directory: repo, worktree: repo })
+    expect(withoutMessages.output).toContain("detail root")
+    expect(withoutMessages.output).toContain("review claims")
+    expect(withoutMessages.output).not.toContain("working on it")
+
+    const withMessages = await tool.execute(
+      { session: "ses_detail0000001", messages: 5 },
+      { directory: repo, worktree: repo },
+    )
+    expect(withMessages.output).toContain("working on it")
+    expect(withMessages.output).toContain("[tool bash completed]")
+  })
+
+  test("reports unknown sessions without failing", async () => {
+    const repo = seedRepo([])
+    const stateDir = tempDir("state-")
+    const hooks = await startPlugin(repo, stateDir)
+    const tool = swarmTool(hooks)
+
+    const result = await tool.execute({ session: "ses_missing" }, { directory: repo, worktree: repo })
+    expect(result.output).toContain("no session matching")
   })
 })

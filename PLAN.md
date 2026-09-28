@@ -174,6 +174,9 @@ Confirmed against opencode 1.18.32 with the dev harness (scratch
 | Server tap + `swarm_status` + identity inject | done | `test/server.test.ts` + harness spike |
 | Unique subagent identity + `session.identity` | done | child-session proxy in the harness; identity unit test |
 | Claim↔session join + commit coverage risk | done | `test/server.test.ts` (covered/uncovered/non-risky) |
+| Baseline session import at bootstrap | done | `test/server.test.ts` (imports + skips stale) |
+| `swarm_status` session detail (`session`, opt-in `messages`) | done | `test/server.test.ts` (detail + message gating) |
+| TUI selection + `subplug.session` detail route | load-verified | TUI marker from `--tui`; visual check pending |
 | TUI sidebar/route/risk toast (SolidJS) | load-verified | TUI marker from `--tui`; `--demo` seed for visual check |
 | Real `task` subagent run | user-run | prompt + `--inspect` documented in README |
 | Visual TUI + toast/attention behavior | user-run | `--demo` + `--poke-risk` documented in README |
@@ -181,12 +184,18 @@ Confirmed against opencode 1.18.32 with the dev harness (scratch
 ## Handoff prompt for a fresh window
 
 > Read PLAN.md. P0 and the P1/P2/P3 implementation are complete, including
-> unique subagent identities, the claim↔session join, and the commit coverage
-> risk toast. Automated gate: `bun install; bun run typecheck; bun test;
-> bun run scripts/dev-harness.ts; bun run scripts/dev-harness.ts --tui`. The
-> user then runs the manual checks from the README: `--demo --keep` + `opencode`
-> for the visual TUI, `--poke-risk` for the toast, and a real `task` prompt +
-> `--inspect` for live parent/child records. Next phase after that is
+> unique subagent identities, the claim↔session join, the commit coverage risk
+> toast, baseline session import, and the `swarm_status` session detail. The TUI
+> has a dashboard with selection and a `subplug.session` detail route
+> (metadata/todos/usage/conversation). Automated gate: `bun install;
+> bun run typecheck; bun test; bun run scripts/dev-harness.ts;
+> bun run scripts/dev-harness.ts --tui`. The TUI's `api.client.session` is the
+> v2 flat-param client (`{ sessionID }`, not `{ path: { id } }`); use
+> `api.client.session.messages/todo/children` for detail data, and import the
+> TUI module directly (`bun -e 'await import(...)'`) to sanity-check module
+> load. The user then runs the manual checks from the README: `--demo --keep` +
+> `opencode` for the visual TUI, `--poke-risk` for the toast, and a real `task`
+> prompt + `--inspect` for live parent/child records. Next phase after that is
 > portability/packaging (own GitHub repo, LICENSE, `bun.lock`, `.gitattributes`,
 > dual-platform README, engines, CI, `resolveStateDir` retry/fallback fix). Keep
 > `client.path.get()` out of eager plugin init.

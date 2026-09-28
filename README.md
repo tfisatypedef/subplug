@@ -41,8 +41,9 @@ opencode plugin subplug
 
 ### Manual config
 
-`opencode plugin` just writes these entries, so you can also add them yourself
-(absolute paths are safest):
+`opencode plugin` just writes these entries, so you can also add them yourself.
+Path specs resolve relative to the config file's directory (`.opencode/`), not
+the project root, so absolute paths are unambiguous:
 
 `.opencode/opencode.json` (server):
 
@@ -91,6 +92,9 @@ bash command summaries that are categorized (`git-commit`, `git-push`, `coord`,
 `plant`, `test`) and redacted for tokens, secrets, and URL credentials. No
 message bodies, no file contents.
 
+At startup the server imports the project's existing sessions (metadata only,
+bounded by `maxAgeMs`) so restored sessions appear before they emit new events.
+
 When identity injection is on, a `git commit`/`git push`/`coord` command whose
 staged paths are not covered by the session's claims is recorded as a
 `command.risk` event (read-only check; nothing is ever blocked) and surfaced as
@@ -102,15 +106,25 @@ all of them, so other windows/clones can be aggregated later.
 
 The server plugin also registers a read-only `swarm_status` tool that returns
 the session tree plus active claims, conflicts, and the last passing
-verification (text or JSON).
+verification (text or JSON). Pass `session` (full id or unique prefix) for one
+session's detail, and `messages` (count) to include recent message excerpts.
+Message excerpts are read live and are never written to the hub.
 
 ## TUI
 
-- Sidebar slot **Agents** (order 650, below the internal blocks): recent
-  sessions, status marks, and the active-claim count.
+- Sidebar slot **Agents** (order 650, below the internal blocks): the last 8
+  sessions, status marks, the current session marker, and the active-claim
+  count.
 - Dashboard route `subplug`: all sessions with status/agent/model/age and the
   claim list with expiry, batons, conflicts, and the session each claim is
   joined to (`⇄ <session>`). Open with the `/subplug` command or `ctrl+alt+a`.
+  Arrow keys select a session; Enter opens the detail view; `esc`/`q` returns to
+  the view you came from.
+- Detail route `subplug.session`: metadata, todos, subagents, joined claims,
+  token/context usage (from the last assistant message and the provider model
+  limit), and the last messages with tool calls. `esc`/`q` returns to the
+  dashboard. Conversation is fetched live over the SDK and never stored in the
+  hub.
 - Toasts plus attention sounds on `session.error`, subagent completion, and
   uncovered-commit risk.
 

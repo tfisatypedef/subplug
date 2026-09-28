@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import type { KeyEvent, RGBA, Renderable } from "@opentui/core"
 import { createBindingLookup, type BindingConfig } from "@opentui/keymap/extras"
-import { createSignal } from "solid-js"
+import { createSignal, onCleanup } from "solid-js"
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule, TuiSlotPlugin } from "@opencode-ai/plugin/tui"
 import type { ClaimRecord, MonitorState, SessionNode } from "../shared/types.ts"
 import { joinClaimsToSessions, readMonitorState } from "../hub/monitor.ts"
@@ -118,6 +118,106 @@ function claimLabel(claim: ClaimRecord, now: number): string {
   return `${claim.agent} ${remaining}${baton}`
 }
 
+type MessageInfo = {
+  role?: string
+  agent?: string
+  modelID?: string
+  providerID?: string
+  tokens?: { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } }
+  cost?: number
+}
+
+type MessageRow = { info?: MessageInfo; parts?: Array<Record<string, unknown>> }
+
+type SessionDetailState = {
+  todos: Array<{ content: string; status: string }>
+  messages: Array<{ role: string; agent?: string; model?: string; text: string }>
+  tokens: number
+  cost: number
+  contextLimit?: number
+}
+
+function unwrapData<T>(response: unknown): T | undefined {
+  if (!response || typeof response !== "object") return undefined
+  const data = (response as { data?: T }).data
+  return data === undefined ? (response as T) : data
+}
+
+function summarizeMessage(parts: Array<Record<string, unknown>> | undefined, maxChars = 240): string {
+  const pieces: string[] = []
+  for (const part of parts ?? []) {
+    if (part.type === "text" && typeof part.text === "string") {
+      const text = part.text.replace(/\s+/g, " ").trim()
+      if (text) pieces.push(text)
+      continue
+    }
+    if (part.type === "tool" && typeof part.tool === "string") {
+      const state = record(part.state) ? (part.state as Record<string, unknown>) : {}
+      const status = typeof state.status === "string" ? state.status : ""
+      pieces.push(`[${part.tool}${status ? ` ${status}` : ""}]`)
+    }
+  }
+  const text = pieces.filter(Boolean).join(" ")
+  return text.length > maxChars ? `${text.slice(0, maxChars - 1)}…` : text
+}
+
+async function loadSessionDetail(api: TuiPluginApi, sessionID: string): Promise<SessionDetailState> {
+  const state: SessionDetailState = { todos: [], messages: [], tokens: 0, cost: 0 }
+  const client = api.client as unknown as {
+    session: {
+      todo: (input: { sessionID: string }) => Promise<unknown>
+      messages: (input: { sessionID: string; limit?: number }) => Promise<unknown>
+    }
+  }
+  const [todoResult, messageResult] = await Promise.allSettled([
+    client.session.todo({ sessionID }),
+    client.session.messages({ sessionID, limit: 20 }),
+  ])
+
+  if (todoResult.status === "fulfilled") {
+    const rows = unwrapData<Array<{ content?: string; status?: string }>>(todoResult.value)
+    if (Array.isArray(rows)) {
+      state.todos = rows
+        .filter((row) => typeof row?.content === "string")
+        .map((row) => ({ content: String(row.content), status: String(row.status ?? "pending") }))
+    }
+  }
+
+  if (messageResult.status === "fulfilled") {
+    const rows = unwrapData<MessageRow[]>(messageResult.value)
+    if (Array.isArray(rows)) {
+      state.messages = rows.map((row) => ({
+        role: String(row.info?.role ?? "?"),
+        agent: row.info?.agent,
+        model: row.info?.modelID,
+        text: summarizeMessage(row.parts),
+      }))
+      const assistant = [...rows].reverse().find((row) => row.info?.role === "assistant" && row.info?.tokens)
+      const tokens = assistant?.info?.tokens
+      if (tokens) {
+        state.tokens =
+          (tokens.input ?? 0) +
+          (tokens.output ?? 0) +
+          (tokens.reasoning ?? 0) +
+          (tokens.cache?.read ?? 0) +
+          (tokens.cache?.write ?? 0)
+        state.cost = assistant?.info?.cost ?? 0
+        const provider = api.state.provider.find((item) => item.id === assistant?.info?.providerID)
+        const modelID = assistant?.info?.modelID
+        const model = modelID ? provider?.models[modelID] : undefined
+        state.contextLimit = model?.limit.context
+      }
+    }
+  }
+  return state
+}
+
+function compactTokens(value: number): string {
+  if (value < 1000) return `${value}`
+  if (value < 1_000_000) return `${(value / 1000).toFixed(1)}k`
+  return `${(value / 1_000_000).toFixed(2)}M`
+}
+
 function createMonitor(api: TuiPluginApi, cfg: Cfg) {
   const [state, setState] = createSignal<MonitorState>(emptyState())
   let hubDir: string | undefined
@@ -196,9 +296,10 @@ function Sidebar(props: { state: () => MonitorState; sessionID: string }) {
       </text>
       {snapshot().sessions.length === 0 ? <text fg={"#a5a5a5"}>no sessions seen yet</text> : null}
       {snapshot()
-        .sessions.slice(-5)
+        .sessions.slice(-8)
         .map((session) => (
           <text fg={session.sessionID === props.sessionID ? "#f0f0f0" : "#a5a5a5"}>
+            {session.sessionID === props.sessionID ? "▸ " : "  "}
             {statusMark(session.status)} {session.kind === "subagent" ? "└ " : ""}
             {sessionLabel(session)}
           </text>
@@ -213,11 +314,65 @@ function Sidebar(props: { state: () => MonitorState; sessionID: string }) {
   )
 }
 
-function Dashboard(props: { api: TuiPluginApi; state: () => MonitorState; route: string; command: string }) {
+function Dashboard(props: {
+  api: TuiPluginApi
+  state: () => MonitorState
+  route: string
+  command: string
+  onClose: () => void
+}) {
   const snapshot = () => props.state()
   const skin = () => skinOf(props.api)
   const now = () => snapshot().generatedAt
   const holders = () => joinClaimsToSessions(snapshot().registry, snapshot().sessions)
+  const rows = () => [...snapshot().sessions].sort((a, b) => b.lastEventAt - a.lastEventAt)
+  const [selected, setSelected] = createSignal(0)
+  const current = () => Math.min(selected(), Math.max(0, rows().length - 1))
+
+  const move = (delta: number) => {
+    const total = rows().length
+    if (!total) return
+    setSelected(Math.max(0, Math.min(total - 1, current() + delta)))
+  }
+  const open = () => {
+    const row = rows()[current()]
+    if (!row) return
+    props.api.route.navigate(`${props.route}.session`, { sessionID: row.sessionID })
+  }
+
+  const routeKeys: BindingConfig<Renderable, KeyEvent> = {
+    "subplug.select.next": "down",
+    "subplug.select.prev": "up",
+    "subplug.open.selected": "return",
+    "subplug.dashboard.back": ["escape", "q"],
+  }
+  const keys = createBindingLookup(routeKeys)
+  const disposeKeys = props.api.keymap.registerLayer({
+    priority: 100,
+    commands: [
+      { name: "subplug.select.next", title: "Subplug: next session", category: "Plugin", run: () => move(1) },
+      { name: "subplug.select.prev", title: "Subplug: previous session", category: "Plugin", run: () => move(-1) },
+      {
+        name: "subplug.open.selected",
+        title: "Subplug: open session detail",
+        category: "Plugin",
+        run: () => open(),
+      },
+      {
+        name: "subplug.dashboard.back",
+        title: "Subplug: close dashboard",
+        category: "Plugin",
+        run: () => props.onClose(),
+      },
+    ],
+    bindings: keys.gather("subplug.dashboard", [
+      "subplug.select.next",
+      "subplug.select.prev",
+      "subplug.open.selected",
+      "subplug.dashboard.back",
+    ]),
+  })
+  onCleanup(disposeKeys)
 
   return (
     <box width="100%" height="100%" backgroundColor={skin().panel} flexDirection="column">
@@ -254,10 +409,13 @@ function Dashboard(props: { api: TuiPluginApi; state: () => MonitorState; route:
           <text fg={skin().accent}>
             <b>Sessions ({snapshot().sessions.length})</b>
           </text>
-          {snapshot().sessions.length === 0 ? <text fg={skin().muted}>no sessions recorded yet</text> : null}
-          {snapshot().sessions.map((session) => (
+          {rows().length === 0 ? <text fg={skin().muted}>no sessions recorded yet</text> : null}
+          {rows().map((session, index) => (
             <box flexDirection="column">
               <text fg={statusColor(skin(), session.status)}>
+                <span style={{ fg: index === current() ? skin().accent : skin().muted }}>
+                  {index === current() ? "▸ " : "  "}
+                </span>
                 {statusMark(session.status)} {session.kind === "subagent" ? "└ " : ""}
                 <span style={{ fg: skin().text }}>{sessionLabel(session)}</span>
                 <span style={{ fg: skin().muted }}>
@@ -307,7 +465,192 @@ function Dashboard(props: { api: TuiPluginApi; state: () => MonitorState; route:
           ) : null}
         </box>
 
-        <text fg={skin().muted}>/{props.route} to open · {props.command} opens from the command palette</text>
+        <text fg={skin().muted}>
+          ↑/↓ select · enter open · esc/q back · /{props.route} reopens · {props.command} from the palette
+        </text>
+      </box>
+    </box>
+  )
+}
+
+function SessionDetail(props: { api: TuiPluginApi; state: () => MonitorState; sessionID: string; route: string }) {
+  const skin = () => skinOf(props.api)
+  const [detail, setDetail] = createSignal<SessionDetailState>({ todos: [], messages: [], tokens: 0, cost: 0 })
+  const session = () => props.state().sessions.find((item) => item.sessionID === props.sessionID)
+  const children = () => props.state().sessions.filter((item) => item.parentID === props.sessionID)
+  const claims = () => {
+    const identity = session()?.identity
+    if (!identity) return []
+    return props.state().registry.claims.filter((claim) => claim.status === "active" && claim.agent === identity)
+  }
+
+  const refresh = async () => {
+    try {
+      setDetail(await loadSessionDetail(props.api, props.sessionID))
+    } catch {
+      // detail refresh is best-effort
+    }
+  }
+  void refresh()
+  const timer = setInterval(() => void refresh(), 1500)
+  onCleanup(() => clearInterval(timer))
+
+  const backKeys: BindingConfig<Renderable, KeyEvent> = { "subplug.back": ["escape", "q"] }
+  const keys = createBindingLookup(backKeys)
+  const disposeKeys = props.api.keymap.registerLayer({
+    priority: 100,
+    commands: [
+      {
+        name: "subplug.back",
+        title: "Subplug: back to dashboard",
+        category: "Plugin",
+        run: () => props.api.route.navigate(props.route),
+      },
+    ],
+    bindings: keys.gather("subplug.detail", ["subplug.back"]),
+  })
+  onCleanup(disposeKeys)
+
+  const usage = () => {
+    const value = detail()
+    if (!value.tokens && !value.contextLimit) return undefined
+    const percent = value.contextLimit ? Math.round((value.tokens / value.contextLimit) * 100) : undefined
+    const parts = [
+      `tokens ${compactTokens(value.tokens)}${
+        value.contextLimit ? ` / ${compactTokens(value.contextLimit)} (${percent}%)` : ""
+      }`,
+    ]
+    if (value.cost) parts.push(`cost $${value.cost.toFixed(4)}`)
+    return parts.join(" · ")
+  }
+
+  return (
+    <box width="100%" height="100%" backgroundColor={skin().panel} flexDirection="column">
+      <box
+        flexDirection="column"
+        width="100%"
+        height="100%"
+        paddingTop={1}
+        paddingBottom={1}
+        paddingLeft={2}
+        paddingRight={2}
+        gap={1}
+      >
+        <box flexDirection="row" justifyContent="space-between">
+          <text fg={skin().text}>
+            <b>subplug</b>
+            <span style={{ fg: skin().muted }}> session detail</span>
+          </text>
+          <text fg={skin().muted}>esc/q back</text>
+        </box>
+        <text fg={skin().text}>
+          {session() ? `${statusMark(session()!.status)} ${sessionLabel(session()!)}` : props.sessionID}
+        </text>
+        <text fg={skin().muted}>
+          {props.sessionID} · {session()?.status ?? "unknown"}
+          {session()?.agent ? ` · agent=${session()!.agent}` : ""}
+          {session()?.model ? ` · model=${session()!.model}` : ""}
+          {session()?.identity ? ` · ${session()!.identity}` : ""}
+        </text>
+        {session()?.directory ? <text fg={skin().muted}>{session()!.directory}</text> : null}
+        {usage() ? <text fg={skin().accent}>{usage()}</text> : null}
+
+        <box
+          border
+          borderColor={skin().border}
+          flexDirection="column"
+          paddingLeft={1}
+          paddingRight={1}
+          paddingTop={1}
+          paddingBottom={1}
+          gap={1}
+        >
+          <text fg={skin().accent}>
+            <b>Todos ({detail().todos.length})</b>
+          </text>
+          {detail().todos.length === 0 ? <text fg={skin().muted}>no todos recorded</text> : null}
+          {detail()
+            .todos.slice(-8)
+            .map((todo) => (
+              <text fg={skin().text}>
+                <span style={{ fg: todo.status === "completed" ? skin().success : skin().muted }}>
+                  [{todo.status}]
+                </span>{" "}
+                {todo.content.slice(0, 120)}
+              </text>
+            ))}
+        </box>
+
+        {children().length ? (
+          <box
+            border
+            borderColor={skin().border}
+            flexDirection="column"
+            paddingLeft={1}
+            paddingRight={1}
+            paddingTop={1}
+            paddingBottom={1}
+            gap={1}
+          >
+            <text fg={skin().accent}>
+              <b>Subagents ({children().length})</b>
+            </text>
+            {children().map((child) => (
+              <text fg={statusColor(skin(), child.status)}>
+                {statusMark(child.status)} {sessionLabel(child)} {child.sessionID.slice(0, 10)}
+              </text>
+            ))}
+          </box>
+        ) : null}
+
+        {claims().length ? (
+          <box
+            border
+            borderColor={skin().border}
+            flexDirection="column"
+            paddingLeft={1}
+            paddingRight={1}
+            paddingTop={1}
+            paddingBottom={1}
+            gap={1}
+          >
+            <text fg={skin().accent}>
+              <b>Claims ({claims().length})</b>
+            </text>
+            {claims().map((claim) => (
+              <text fg={skin().text}>
+                <span style={{ fg: skin().muted }}>{claim.claimID.slice(-10)}</span> {claim.agent} expires=
+                {claim.expires}
+              </text>
+            ))}
+          </box>
+        ) : null}
+
+        <box
+          border
+          borderColor={skin().border}
+          flexDirection="column"
+          paddingLeft={1}
+          paddingRight={1}
+          paddingTop={1}
+          paddingBottom={1}
+          gap={1}
+          flexGrow={1}
+        >
+          <text fg={skin().accent}>
+            <b>Conversation (last {detail().messages.length})</b>
+          </text>
+          {detail().messages.length === 0 ? <text fg={skin().muted}>no messages loaded</text> : null}
+          {detail()
+            .messages.slice(-8)
+            .map((message) => (
+              <text fg={message.role === "user" ? skin().text : skin().muted}>
+                <span style={{ fg: message.role === "user" ? skin().accent : skin().success }}>{message.role}</span>
+                {message.agent ? ` ${message.agent}` : ""}
+                {message.model ? ` ${message.model}` : ""}: {message.text}
+              </text>
+            ))}
+        </box>
       </box>
     </box>
   )
@@ -318,6 +661,24 @@ const tui: TuiPlugin = async (api, options) => {
 
   const cfg = config(options)
   const state = createMonitor(api, cfg)
+  const [previousRoute, setPreviousRoute] = createSignal<{ name: string; params?: Record<string, unknown> }>({
+    name: "home",
+  })
+  const closeDashboard = () => {
+    const previous = previousRoute()
+    if (previous.name === "session") {
+      const sessionID = previous.params?.sessionID
+      if (typeof sessionID === "string" && sessionID) {
+        api.route.navigate("session", { sessionID })
+        return
+      }
+    }
+    if (previous.name === "home") {
+      api.route.navigate("home")
+      return
+    }
+    api.route.navigate(previous.name, previous.params)
+  }
 
   try {
     const markerDir = join(cfg.storageDir ?? api.state.path.state, "subplug")
@@ -333,7 +694,26 @@ const tui: TuiPlugin = async (api, options) => {
   api.route.register([
     {
       name: cfg.route,
-      render: () => <Dashboard api={api} state={state} route={cfg.route} command={cfg.command} />,
+      render: () => (
+        <Dashboard
+          api={api}
+          state={state}
+          route={cfg.route}
+          command={cfg.command}
+          onClose={closeDashboard}
+        />
+      ),
+    },
+    {
+      name: `${cfg.route}.session`,
+      render: (input) => (
+        <SessionDetail
+          api={api}
+          state={state}
+          sessionID={typeof input.params?.sessionID === "string" ? input.params.sessionID : ""}
+          route={cfg.route}
+        />
+      ),
     },
   ])
 
@@ -347,6 +727,7 @@ const tui: TuiPlugin = async (api, options) => {
         namespace: "palette",
         slashName: "subplug",
         run() {
+          setPreviousRoute(api.route.current)
           api.route.navigate(cfg.route)
         },
       },
