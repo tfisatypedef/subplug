@@ -9,6 +9,7 @@ import { applyRecord } from "../hub/fold.ts"
 import { agentIdentity } from "../hub/identity.ts"
 import { readMonitorState } from "../hub/monitor.ts"
 import { buildSessionTree, flattenTree, rollupSubtree } from "../hub/tree.ts"
+import { messageSummary, resolveTargets } from "../hub/comms.ts"
 import { fallbackStateDir, hubRoot, snapshotFile } from "../hub/paths.ts"
 import { findRepoRoot, isCoordinationEnabled } from "../coord/repo.ts"
 import { buildRegistryState, coverageErrors, readAdoptionPaths } from "../coord/claims.ts"
@@ -399,8 +400,16 @@ const server: Plugin = async (input, options) => {
       status: () => Promise<unknown>
       todo: (input: { path: { id: string } }) => Promise<unknown>
       messages: (input: { path: { id: string }; query?: { limit?: number } }) => Promise<unknown>
+      prompt: (input: {
+        path: { id: string }
+        body: { parts: Array<{ type: "text"; text: string }>; noReply?: boolean; messageID?: string }
+      }) => Promise<unknown>
     }
   }
+
+  const SEND_CAP = 5
+  const SEND_CAP_WINDOW_MS = 60_000
+  const sendTimes = new Map<string, number[]>()
 
   const seedBaseline = async (): Promise<void> => {
     try {
@@ -723,6 +732,86 @@ const server: Plugin = async (input, options) => {
             title: "subplug swarm_status",
             output: renderStatus(state.generatedAt, dir, root, state.sessions, state.registry),
             metadata: { sessions: state.sessions.length, claims: state.registry.claims.length },
+          }
+        },
+      }),
+
+      swarm_send: tool({
+        description:
+          "Send a message to another opencode session or subagent in this project (addressed only, no broadcast). The message is written as a durable user message in the target session; idle targets start a turn, busy targets are queued for the next step boundary. Records a metadata-only pointer in the hub. Pass `confirm: true` to send to a busy target.",
+        args: {
+          session: tool.schema.string().optional(),
+          task_id: tool.schema.string().optional(),
+          message: tool.schema.string(),
+          confirm: tool.schema.boolean().optional(),
+        },
+        async execute(args, context) {
+          const ref = (args.session ?? args.task_id ?? "").trim()
+          const text = args.message.trim()
+          if (!ref || !text) {
+            return {
+              title: "subplug swarm_send",
+              output: "swarm_send needs a target session/task_id and a non-empty message",
+            }
+          }
+          const { hubDir: dir } = await ensure()
+          const root = repoRootFor(context.worktree ?? context.directory ?? input.directory)
+          const state = readMonitorState(dir, root, { now: now(), maxAgeMs: cfg.maxAgeMs })
+          const resolution = resolveTargets(state.sessions, ref)
+          if (resolution.kind === "none") {
+            return { title: "subplug swarm_send", output: `no session matching ${ref}` }
+          }
+          if (resolution.kind === "ambiguous") {
+            const candidates = resolution.candidates.map((candidate) => candidate.sessionID.slice(0, 12)).join(", ")
+            return { title: "subplug swarm_send", output: `ambiguous target ${ref}: ${candidates}` }
+          }
+          const target = resolution.session
+          if (target.deleted) {
+            return { title: "subplug swarm_send", output: `session ${target.sessionID.slice(0, 12)} is deleted` }
+          }
+          if (target.sessionID === context.sessionID) {
+            return { title: "subplug swarm_send", output: "refusing to send a message to the calling session" }
+          }
+          if (target.status === "busy" && !args.confirm) {
+            return {
+              title: "subplug swarm_send",
+              output: `session ${target.sessionID.slice(0, 12)} is busy; pass confirm:true to queue anyway (consumed at the next step boundary, may interleave)`,
+              metadata: { target: target.sessionID, busy: true },
+            }
+          }
+          const sender = context.sessionID
+          const recent = (sendTimes.get(sender) ?? []).filter((ts) => now() - ts < SEND_CAP_WINDOW_MS)
+          if (recent.length >= SEND_CAP) {
+            return {
+              title: "subplug swarm_send",
+              output: `send cap reached (${SEND_CAP}/minute); wait before sending again`,
+            }
+          }
+          const msgID = `msg_${Math.random().toString(16).slice(2, 10)}${now().toString(16)}`
+          const noReply = target.status !== "idle"
+          try {
+            await sessionClient.session.prompt({
+              path: { id: target.sessionID },
+              body: { messageID: msgID, noReply, parts: [{ type: "text", text }] },
+            })
+          } catch (error) {
+            return { title: "subplug swarm_send", output: `send failed: ${summarizeError(error)}` }
+          }
+          recent.push(now())
+          sendTimes.set(sender, recent)
+          const from = sessions.get(sender)?.identity ?? sender
+          await append({
+            ts: now(),
+            serverID,
+            sessionID: target.sessionID,
+            kind: "comms.sent",
+            summary: messageSummary(text),
+            refs: { msgID, to: target.sessionID, from, kind: "message", delivery: noReply ? "queue" : "prompt" },
+          })
+          return {
+            title: "subplug swarm_send",
+            output: `sent ${msgID} to ${target.sessionID.slice(0, 12)} (${target.status}, ${noReply ? "queued" : "prompted"})`,
+            metadata: { target: target.sessionID, msgID, noReply },
           }
         },
       }),

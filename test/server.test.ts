@@ -76,6 +76,10 @@ type FakeSession = {
 
 type FakeMessages = Record<string, Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }>>
 type FakeTodos = Record<string, Array<{ content: string; status: string }>>
+type FakePrompt = {
+  path: { id: string }
+  body: { parts: Array<{ type: string; text: string }>; noReply?: boolean; messageID?: string }
+}
 
 async function waitFor(predicate: () => boolean, timeoutMs = 4000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
@@ -96,6 +100,7 @@ async function startPlugin(
     statuses?: Record<string, { type: string }>
     messages?: FakeMessages
     todos?: FakeTodos
+    prompts?: FakePrompt[]
   } = {},
 ): Promise<Hooks> {
   delete process.env.COORD_AGENT_ID
@@ -116,6 +121,10 @@ async function startPlugin(
         status: async () => ({ data: options.statuses ?? {} }),
         todo: async (request: { path: { id: string } }) => ({ data: options.todos?.[request.path.id] ?? [] }),
         messages: async (request: { path: { id: string } }) => ({ data: options.messages?.[request.path.id] ?? [] }),
+        prompt: async (request: FakePrompt) => {
+          options.prompts?.push(request)
+          return { data: { info: { id: request.body.messageID ?? "msg_test" }, parts: [] } }
+        },
       },
     },
     project: { id: PROJECT_ID },
@@ -463,5 +472,137 @@ describe("server plugin swarm_status detail", () => {
     expect(result.output).toContain("1 busy")
     expect(result.output).toContain("tree orphan")
     expect(result.output).toContain("orphan")
+  })
+})
+
+describe("server plugin swarm_send", () => {
+  type SendExecutor = {
+    execute: (
+      args: Record<string, unknown>,
+      context: Record<string, unknown>,
+    ) => Promise<{ output: string; metadata?: Record<string, unknown> }>
+  }
+
+  function sendTool(hooks: Hooks): SendExecutor {
+    return (hooks.tool as unknown as Record<string, SendExecutor>)["swarm_send"]!
+  }
+
+  const sender = { sessionID: "ses_sender0000001" }
+
+  test("prompts an idle target and records a comms.sent pointer", async () => {
+    const repo = seedRepo([])
+    const stateDir = tempDir("state-")
+    const now = Date.now()
+    const prompts: FakePrompt[] = []
+    const hooks = await startPlugin(repo, stateDir, {
+      sessions: [
+        {
+          id: "ses_sendidle00001",
+          projectID: PROJECT_ID,
+          directory: repo,
+          title: "idle target",
+          time: { created: now - 10_000, updated: now - 5_000 },
+        },
+      ],
+      statuses: { ses_sendidle00001: { type: "idle" } },
+      prompts,
+    })
+    const seeded = await waitFor(() => hubEvents(stateDir).some((record) => record.sessionID === "ses_sendidle00001"))
+    expect(seeded).toBe(true)
+
+    const result = await sendTool(hooks).execute(
+      { session: "ses_sendidle", message: "please review  the diff" },
+      { ...sender, directory: repo, worktree: repo },
+    )
+
+    expect(result.output).toContain("prompted")
+    expect(prompts.length).toBe(1)
+    expect(prompts[0]?.path.id).toBe("ses_sendidle00001")
+    expect(prompts[0]?.body.noReply).toBe(false)
+    expect(prompts[0]?.body.parts[0]?.text).toBe("please review  the diff")
+
+    const sent = hubEvents(stateDir).filter((record) => record.kind === "comms.sent")
+    expect(sent.length).toBe(1)
+    expect(sent[0]?.sessionID).toBe("ses_sendidle00001")
+    expect(sent[0]?.refs?.to).toBe("ses_sendidle00001")
+    expect(sent[0]?.refs?.from).toBe("ses_sender0000001")
+    expect(sent[0]?.refs?.delivery).toBe("prompt")
+    expect(sent[0]?.summary).toBe("please review the diff")
+  })
+
+  test("refuses a busy target without confirm and queues with confirm", async () => {
+    const repo = seedRepo([])
+    const stateDir = tempDir("state-")
+    const now = Date.now()
+    const prompts: FakePrompt[] = []
+    const hooks = await startPlugin(repo, stateDir, {
+      sessions: [
+        {
+          id: "ses_sendbusy00001",
+          projectID: PROJECT_ID,
+          directory: repo,
+          title: "busy target",
+          time: { created: now - 10_000, updated: now - 5_000 },
+        },
+      ],
+      statuses: { ses_sendbusy00001: { type: "busy" } },
+      prompts,
+    })
+    const seeded = await waitFor(() =>
+      hubEvents(stateDir).some(
+        (record) => record.kind === "session.status" && record.sessionID === "ses_sendbusy00001",
+      ),
+    )
+    expect(seeded).toBe(true)
+
+    const tool = sendTool(hooks)
+    const refused = await tool.execute(
+      { session: "ses_sendbusy00001", message: "hi" },
+      { ...sender, directory: repo, worktree: repo },
+    )
+    expect(refused.output).toContain("busy")
+    expect(refused.metadata?.busy).toBe(true)
+    expect(prompts.length).toBe(0)
+
+    const queued = await tool.execute(
+      { session: "ses_sendbusy00001", message: "hi", confirm: true },
+      { ...sender, directory: repo, worktree: repo },
+    )
+    expect(queued.output).toContain("queued")
+    expect(prompts.length).toBe(1)
+    expect(prompts[0]?.body.noReply).toBe(true)
+    expect(hubEvents(stateDir).filter((record) => record.kind === "comms.sent").length).toBe(1)
+  })
+
+  test("reports unknown and ambiguous targets without sending", async () => {
+    const repo = seedRepo([])
+    const stateDir = tempDir("state-")
+    const now = Date.now()
+    const prompts: FakePrompt[] = []
+    const hooks = await startPlugin(repo, stateDir, {
+      sessions: [
+        { id: "ses_amb000000001", projectID: PROJECT_ID, directory: repo, title: "amb one", time: { updated: now } },
+        { id: "ses_amb000000002", projectID: PROJECT_ID, directory: repo, title: "amb two", time: { updated: now } },
+      ],
+      prompts,
+    })
+    const seeded = await waitFor(() => hubEvents(stateDir).filter((record) => record.sessionID?.startsWith("ses_amb")).length >= 2)
+    expect(seeded).toBe(true)
+
+    const tool = sendTool(hooks)
+    const missing = await tool.execute({ session: "ses_nope", message: "hi" }, { ...sender, directory: repo, worktree: repo })
+    expect(missing.output).toContain("no session matching")
+
+    const ambiguous = await tool.execute({ session: "ses_amb", message: "hi" }, { ...sender, directory: repo, worktree: repo })
+    expect(ambiguous.output).toContain("ambiguous")
+
+    const self = await tool.execute(
+      { session: "ses_amb000000001", message: "hi" },
+      { sessionID: "ses_amb000000001", directory: repo, worktree: repo },
+    )
+    expect(self.output).toContain("calling session")
+
+    expect(prompts.length).toBe(0)
+    expect(hubEvents(stateDir).filter((record) => record.kind === "comms.sent").length).toBe(0)
   })
 })
