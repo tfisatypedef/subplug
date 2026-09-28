@@ -1,9 +1,12 @@
 /** @jsxImportSource @opentui/solid */
 import { describe, expect, test } from "bun:test"
-import { testRender } from "@opentui/solid"
+import { testRender, type JSX } from "@opentui/solid"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { Dashboard, SessionDetail, Sidebar } from "../src/tui/index.tsx"
 import type { MonitorState, SessionNode } from "../src/shared/types.ts"
+
+const WIDTH = 100
+const HEIGHT = 30
 
 function session(overrides: Partial<SessionNode> & { sessionID: string }): SessionNode {
   return { kind: "root", status: "idle", lastEventAt: 1000, ...overrides }
@@ -54,68 +57,81 @@ function stubApi(): TuiPluginApi {
   } as unknown as TuiPluginApi
 }
 
+async function renderHosted(node: () => JSX.Element) {
+  const setup = await testRender(
+    () => (
+      <box width={WIDTH} height={HEIGHT} flexDirection="column">
+        <box flexGrow={1} minHeight={0} flexDirection="column">
+          {node()}
+        </box>
+      </box>
+    ),
+    { width: WIDTH, height: HEIGHT },
+  )
+  await setup.flush()
+  return setup
+}
+
 function gap(line: string, left: string, right: string): number {
   const leftEnd = line.indexOf(left) + left.length
   return line.indexOf(right) - leftEnd
 }
 
 describe("subplug TUI layout", () => {
-  test("right-aligns the dashboard header and spans the panels", async () => {
-    const setup = await testRender(
-      () => (
-        <Dashboard
-          api={stubApi()}
-          state={monitorState}
-          route="subplug"
-          command="subplug.open"
-          onClose={() => undefined}
-          openSession={() => undefined}
-          compose={() => undefined}
-        />
-      ),
-      { width: 100, height: 30 },
-    )
-    await setup.flush()
+  test("dashboard sits inside the host shell with full-width rows and panels", async () => {
+    const setup = await renderHosted(() => (
+      <Dashboard
+        api={stubApi()}
+        state={monitorState}
+        route="subplug"
+        command="subplug.open"
+        onClose={() => undefined}
+        openSession={() => undefined}
+        compose={() => undefined}
+      />
+    ))
     const lines = setup.captureCharFrame().split("\n")
 
     const header = lines.find((line) => line.includes("swarm dashboard"))
     expect(header).toBeDefined()
-    expect(gap(header ?? "", "swarm dashboard", "updated ")).toBeGreaterThan(20)
+    expect(header?.indexOf("subplug")).toBe(2)
+    expect(header?.trimEnd().length).toBe(WIDTH - 2)
+    expect(header?.trimEnd().endsWith("ago")).toBe(true)
 
     const title = lines.find((line) => line.includes("Sessions (2)"))
-    expect(title?.trimEnd().at(-1)).toBe("│")
+    expect(title?.indexOf("Sessions")).toBe(4)
+    expect(title?.trimEnd().endsWith("│")).toBe(true)
     setup.renderer.destroy()
   })
 
-  test("right-aligns the session detail headers and spans the panels", async () => {
-    const setup = await testRender(
-      () => (
-        <SessionDetail
-          api={stubApi()}
-          state={monitorState}
-          sessionID={() => "ses_root00000001"}
-          trail={() => ["ses_root00000001"]}
-          descend={() => undefined}
-          back={() => undefined}
-          compose={() => undefined}
-          intervalMs={60_000}
-        />
-      ),
-      { width: 100, height: 30 },
-    )
-    await setup.flush()
+  test("session detail sits inside the host shell with full-width rows and panels", async () => {
+    const setup = await renderHosted(() => (
+      <SessionDetail
+        api={stubApi()}
+        state={monitorState}
+        sessionID={() => "ses_root00000001"}
+        trail={() => ["ses_root00000001"]}
+        descend={() => undefined}
+        back={() => undefined}
+        compose={() => undefined}
+        intervalMs={60_000}
+      />
+    ))
     const lines = setup.captureCharFrame().split("\n")
 
     const header = lines.find((line) => line.includes("session detail"))
     expect(header).toBeDefined()
-    expect(gap(header ?? "", "session detail", "esc/q back")).toBeGreaterThan(20)
+    expect(header?.indexOf("subplug")).toBe(2)
+    expect(header?.trimEnd().length).toBe(WIDTH - 2)
+    expect(header?.trimEnd().endsWith("esc/q back")).toBe(true)
 
     const conversation = lines.find((line) => line.includes("Conversation ("))
-    expect(conversation).toBeDefined()
+    expect(conversation?.indexOf("Conversation")).toBe(4)
+    expect(conversation?.trimEnd().endsWith("│")).toBe(true)
     expect(gap(conversation ?? "", "Conversation (0 rows)", "↑/↓ subagent")).toBeGreaterThan(10)
 
     const todos = lines.find((line) => line.includes("Todos ("))
-    expect(todos?.trimEnd().at(-1)).toBe("│")
+    expect(todos?.trimEnd().endsWith("│")).toBe(true)
     setup.renderer.destroy()
   })
 

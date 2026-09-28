@@ -649,19 +649,19 @@ export function Dashboard(props: {
   onCleanup(disposeKeys)
 
   return (
-    <box width="100%" height="100%" backgroundColor={skin().panel} flexDirection="column">
+    <box flexGrow={1} minHeight={0} backgroundColor={skin().panel} flexDirection="column">
       <box
         flexDirection="column"
         alignItems="stretch"
-        width="100%"
-        height="100%"
+        flexGrow={1}
+        minHeight={0}
         paddingTop={1}
         paddingBottom={1}
         paddingLeft={2}
         paddingRight={2}
         gap={1}
       >
-        <box flexDirection="row" justifyContent="space-between" width="100%">
+        <box flexDirection="row" justifyContent="space-between">
           <text fg={skin().text}>
             <b>subplug</b>
             <span style={{ fg: skin().muted }}> swarm dashboard</span>
@@ -674,7 +674,6 @@ export function Dashboard(props: {
           border
           borderColor={skin().border}
           flexDirection="column"
-          width="100%"
           paddingLeft={1}
           paddingRight={1}
           paddingTop={1}
@@ -717,7 +716,6 @@ export function Dashboard(props: {
           border
           borderColor={skin().border}
           flexDirection="column"
-          width="100%"
           paddingLeft={1}
           paddingRight={1}
           paddingTop={1}
@@ -908,19 +906,19 @@ export function SessionDetail(props: {
   }
 
   return (
-    <box width="100%" height="100%" backgroundColor={skin().panel} flexDirection="column">
+    <box flexGrow={1} minHeight={0} backgroundColor={skin().panel} flexDirection="column">
       <box
         flexDirection="column"
         alignItems="stretch"
-        width="100%"
-        height="100%"
+        flexGrow={1}
+        minHeight={0}
         paddingTop={1}
         paddingBottom={1}
         paddingLeft={2}
         paddingRight={2}
         gap={1}
       >
-        <box flexDirection="row" justifyContent="space-between" width="100%">
+        <box flexDirection="row" justifyContent="space-between">
           <text fg={skin().text}>
             <b>subplug</b>
             <span style={{ fg: skin().muted }}> session detail</span>
@@ -945,7 +943,6 @@ export function SessionDetail(props: {
           border
           borderColor={skin().border}
           flexDirection="column"
-          width="100%"
           paddingLeft={1}
           paddingRight={1}
           paddingTop={1}
@@ -973,7 +970,6 @@ export function SessionDetail(props: {
             border
             borderColor={skin().border}
             flexDirection="column"
-            width="100%"
             paddingLeft={1}
             paddingRight={1}
             paddingTop={1}
@@ -999,7 +995,6 @@ export function SessionDetail(props: {
             border
             borderColor={skin().border}
             flexDirection="column"
-            width="100%"
             paddingLeft={1}
             paddingRight={1}
             paddingTop={1}
@@ -1023,7 +1018,6 @@ export function SessionDetail(props: {
             border
             borderColor={skin().border}
             flexDirection="column"
-            width="100%"
             paddingLeft={1}
             paddingRight={1}
             paddingTop={1}
@@ -1046,7 +1040,6 @@ export function SessionDetail(props: {
           border
           borderColor={skin().border}
           flexDirection="column"
-          width="100%"
           overflow="hidden"
           paddingLeft={1}
           paddingRight={1}
@@ -1055,7 +1048,7 @@ export function SessionDetail(props: {
           gap={1}
           flexGrow={1}
         >
-          <box flexDirection="row" justifyContent="space-between" width="100%">
+          <box flexDirection="row" justifyContent="space-between">
             <text fg={skin().accent}>
               <b>Conversation ({detail().rows.length} rows)</b>
             </text>
