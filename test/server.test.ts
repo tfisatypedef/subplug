@@ -574,6 +574,47 @@ describe("server plugin swarm_send", () => {
     expect(hubEvents(stateDir).filter((record) => record.kind === "comms.sent").length).toBe(1)
   })
 
+  test("pulls the caller inbox and marks pointers seen", async () => {
+    const repo = seedRepo([])
+    const stateDir = tempDir("state-")
+    const now = Date.now()
+    const prompts: FakePrompt[] = []
+    const hooks = await startPlugin(repo, stateDir, {
+      sessions: [
+        {
+          id: "ses_inboxtarget01",
+          projectID: PROJECT_ID,
+          directory: repo,
+          title: "inbox target",
+          time: { created: now - 10_000, updated: now - 5_000 },
+        },
+      ],
+      statuses: { ses_inboxtarget01: { type: "idle" } },
+      prompts,
+    })
+    const seeded = await waitFor(() => hubEvents(stateDir).some((record) => record.sessionID === "ses_inboxtarget01"))
+    expect(seeded).toBe(true)
+
+    const tools = hooks.tool as unknown as Record<string, SendExecutor>
+    await tools["swarm_send"]!.execute(
+      { session: "ses_inboxtarget01", message: "status please" },
+      { sessionID: "ses_sender0000001", directory: repo, worktree: repo },
+    )
+
+    const targetContext = { sessionID: "ses_inboxtarget01", directory: repo, worktree: repo }
+    const pulled = await tools["swarm_status"]!.execute({ inbox: true, format: "json" }, targetContext)
+    const parsed = JSON.parse(pulled.output) as { inbox?: Array<{ msgID: string; from: string; summary: string }> }
+    expect(parsed.inbox?.length).toBe(1)
+    expect(parsed.inbox?.[0]?.from).toBe("ses_sender0000001")
+    expect(parsed.inbox?.[0]?.summary).toBe("status please")
+    expect(pulled.metadata?.inbox).toBe(1)
+    expect(hubEvents(stateDir).filter((record) => record.kind === "comms.seen").length).toBe(1)
+
+    const second = await tools["swarm_status"]!.execute({ inbox: true }, targetContext)
+    expect(second.output).not.toContain("inbox:")
+    expect(second.metadata?.inbox).toBeUndefined()
+  })
+
   test("reports unknown and ambiguous targets without sending", async () => {
     const repo = seedRepo([])
     const stateDir = tempDir("state-")

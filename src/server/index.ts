@@ -9,11 +9,11 @@ import { applyRecord } from "../hub/fold.ts"
 import { agentIdentity } from "../hub/identity.ts"
 import { readMonitorState } from "../hub/monitor.ts"
 import { buildSessionTree, flattenTree, rollupSubtree } from "../hub/tree.ts"
-import { messageSummary, resolveTargets } from "../hub/comms.ts"
+import { inboxFor, messageSummary, resolveTargets } from "../hub/comms.ts"
 import { fallbackStateDir, hubRoot, snapshotFile } from "../hub/paths.ts"
 import { findRepoRoot, isCoordinationEnabled } from "../coord/repo.ts"
 import { buildRegistryState, coverageErrors, readAdoptionPaths } from "../coord/claims.ts"
-import type { ClaimRecord, MonitorState, RegistryState, RiskRecord } from "../shared/types.ts"
+import type { ClaimRecord, CommsPointer, MonitorState, RegistryState, RiskRecord } from "../shared/types.ts"
 
 const SERVER_ID = "subplug"
 
@@ -674,11 +674,12 @@ const server: Plugin = async (input, options) => {
     tool: {
       swarm_status: tool({
         description:
-          "Read-only swarm status: other opencode sessions/subagents in this project plus coordination claims and conflicts. Pass `session` (full id or unique prefix) for one session's detail, with optional `messages` count to include recent message excerpts.",
+          "Swarm status: other opencode sessions/subagents in this project plus coordination claims and conflicts. Pass `session` (full id or unique prefix) for one session's detail, with optional `messages` count to include recent message excerpts. Pass `inbox: true` to pull messages addressed to the calling session (marks them seen).",
         args: {
           format: tool.schema.enum(["json", "text", "tree"]).optional(),
           session: tool.schema.string().optional(),
           messages: tool.schema.number().optional(),
+          inbox: tool.schema.boolean().optional(),
         },
         async execute(args, context) {
           const { hubDir: dir } = await ensure()
@@ -714,24 +715,43 @@ const server: Plugin = async (input, options) => {
             }
           }
 
+          const caller = typeof context.sessionID === "string" ? context.sessionID : undefined
+          const inbox = args.inbox && caller ? inboxFor(state.comms, caller, { now: now() }) : []
+          if (caller) {
+            for (const pointer of inbox) {
+              await append({
+                ts: now(),
+                serverID,
+                sessionID: caller,
+                kind: "comms.seen",
+                refs: { msgID: pointer.msgID },
+              })
+            }
+          }
+          const metadata = {
+            sessions: state.sessions.length,
+            claims: state.registry.claims.length,
+            ...(inbox.length ? { inbox: inbox.length } : {}),
+          }
+
           if (format === "json") {
             return {
               title: "subplug swarm_status",
-              output: JSON.stringify(state, null, 2),
-              metadata: { sessions: state.sessions.length, claims: state.registry.claims.length },
+              output: JSON.stringify(args.inbox ? { ...state, inbox } : state, null, 2),
+              metadata,
             }
           }
           if (format === "tree") {
             return {
               title: "subplug swarm_status",
-              output: renderStatusTree(state.generatedAt, dir, root, state.sessions, state.registry),
-              metadata: { sessions: state.sessions.length, claims: state.registry.claims.length },
+              output: `${renderStatusTree(state.generatedAt, dir, root, state.sessions, state.registry)}${renderInbox(inbox)}`,
+              metadata,
             }
           }
           return {
             title: "subplug swarm_status",
-            output: renderStatus(state.generatedAt, dir, root, state.sessions, state.registry),
-            metadata: { sessions: state.sessions.length, claims: state.registry.claims.length },
+            output: `${renderStatus(state.generatedAt, dir, root, state.sessions, state.registry)}${renderInbox(inbox)}`,
+            metadata,
           }
         },
       }),
@@ -884,6 +904,17 @@ function renderStatus(
     lines.push(`registry errors: ${registry.errors.length}`)
   }
   return lines.join("\n")
+}
+
+function renderInbox(inbox: CommsPointer[]): string {
+  if (!inbox.length) return ""
+  const lines = [`inbox: ${inbox.length} pending`]
+  for (const pointer of inbox) {
+    lines.push(
+      `- ${pointer.msgID} from=${pointer.from} at=${new Date(pointer.ts).toISOString()}${pointer.kind ? ` kind=${pointer.kind}` : ""}: ${pointer.summary}`,
+    )
+  }
+  return `\n${lines.join("\n")}`
 }
 
 function renderStatusTree(
