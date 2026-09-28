@@ -10,7 +10,7 @@ import type { TuiDialogConfirmProps, TuiDialogPromptProps, TuiPluginApi } from "
 import { createFollowUpComposer, Dashboard, SessionDetail, Sidebar, transcriptLine, type Skin } from "../src/tui/index.tsx"
 import { readEventRecords } from "../src/hub/append.ts"
 import type { FollowUpRequest } from "../src/shared/follow-up.ts"
-import type { MonitorState, SessionNode } from "../src/shared/types.ts"
+import type { ClaimRecord, MonitorState, SessionNode } from "../src/shared/types.ts"
 import type { TranscriptRow } from "../src/shared/transcript.ts"
 
 const WIDTH = 100
@@ -172,6 +172,40 @@ describe("subplug TUI layout", () => {
     await setup.renderOnce()
     const after = find()[row + 1] ?? ""
     expect(after).not.toBe(before)
+    setup.renderer.destroy()
+  })
+
+  test("mouse wheel scrolls the square details pane when content overflows", async () => {
+    const identity = "Build@host/ses_root00000001"
+    const claims: ClaimRecord[] = Array.from({ length: 30 }, (_, index) => ({
+      claimID: `claim-${String(index).padStart(2, "0")}`,
+      agent: identity,
+      status: "active",
+      issued: "",
+      expires: new Date(9000).toISOString(),
+      note: "tui",
+      scopes: { patterns: [], files: [], docs: [], evidence: [], baton: null },
+    }))
+    const state: MonitorState = {
+      ...monitorState(),
+      sessions: [session({ sessionID: "ses_root00000001", title: "root session", identity, lastEventAt: 2000 })],
+      registry: { claims, verifications: [], conflicts: [], errors: [] },
+    }
+    const setup = await renderHosted(() => (
+      <Dashboard
+        api={stubApi(WIDTH, HEIGHT)}
+        state={() => state}
+        route="subplug"
+        command="subplug.open"
+        onClose={() => undefined}
+        openSession={() => undefined}
+        compose={() => undefined}
+      />
+    ))
+    const before = setup.captureCharFrame()
+    for (let index = 0; index < 5; index += 1) await setup.mockMouse.scroll(90, 20, "down")
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).not.toBe(before)
     setup.renderer.destroy()
   })
 
