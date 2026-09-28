@@ -72,6 +72,35 @@ describe("EventLog", () => {
   })
 })
 
+describe("cross-server merge", () => {
+  test("folds multiple server logs into one timeline", () => {
+    const dir = tempDir()
+    try {
+      const first = new EventLog(dir, "srv-a")
+      const second = new EventLog(dir, "srv-b")
+      first.append(
+        record({ ts: 1000, serverID: "srv-a", kind: "session.created", sessionID: "ses_a", refs: { title: "from a" } }),
+      )
+      second.append(
+        record({ ts: 2000, serverID: "srv-b", kind: "session.created", sessionID: "ses_b", refs: { title: "from b" } }),
+      )
+      second.append(
+        record({ ts: 3000, serverID: "srv-b", kind: "session.identity", sessionID: "ses_b", refs: { identity: "b@host" } }),
+      )
+
+      const replayed = readEventRecords(dir)
+      expect(replayed.map((item) => item.ts)).toEqual([1000, 2000, 3000])
+      expect(replayed.map((item) => item.serverID)).toEqual(["srv-a", "srv-b", "srv-b"])
+
+      const state = readMonitorState(dir, undefined, { now: 4000 })
+      expect(state.sessions.map((session) => session.sessionID).sort()).toEqual(["ses_a", "ses_b"])
+      expect(state.sessions.find((session) => session.sessionID === "ses_b")?.identity).toBe("b@host")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe("foldSessions", () => {
   test("builds parent/child trees with statuses", () => {
     const sessions = foldSessions([
