@@ -25,6 +25,7 @@ type Cfg = {
   keybinds: BindingConfig<Renderable, KeyEvent> | undefined
   intervalMs: number
   storageDir: string | undefined
+  hubGroup: string | undefined
 }
 
 type Skin = {
@@ -62,6 +63,7 @@ function config(options: Record<string, unknown> | undefined): Cfg {
     keybinds: record(options?.keybinds) ? (options.keybinds as BindingConfig<Renderable, KeyEvent>) : undefined,
     intervalMs: Math.max(250, num(options?.intervalMs, 1000)),
     storageDir: pick(options?.storageDir, "") || pick(coord?.storageDir, "") || process.env.SUBPLUG_STORAGE_DIR || undefined,
+    hubGroup: pick(options?.hubGroup, "") || pick(coord?.hubGroup, "") || process.env.SUBPLUG_HUB_GROUP || undefined,
   }
 }
 
@@ -474,7 +476,7 @@ function createMonitor(api: TuiPluginApi, cfg: Cfg) {
     } catch {
       // keep the placeholder project id
     }
-    hubDir = hubRoot(cfg.storageDir ?? api.state.path.state, projectID)
+    hubDir = hubRoot(cfg.storageDir ?? api.state.path.state, cfg.hubGroup ?? projectID)
     repoRoot = findRepoRoot(api.state.path.worktree)
   }
 

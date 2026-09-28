@@ -97,6 +97,7 @@ async function startPlugin(
     pathGetFailures?: number
     pathGetHangs?: boolean
     stateFromClient?: boolean
+    hubGroup?: string
     sessions?: FakeSession[]
     statuses?: Record<string, { type: string }>
     messages?: FakeMessages
@@ -138,6 +139,7 @@ async function startPlugin(
   } as unknown as PluginInput
   const pluginOptions: Record<string, unknown> = { coord: { injectIdentity: true } }
   if (!options.stateFromClient) pluginOptions.storageDir = stateDir
+  if (options.hubGroup) pluginOptions.hubGroup = options.hubGroup
   return serverModule.server(input, pluginOptions)
 }
 
@@ -211,6 +213,20 @@ describe("server plugin state dir", () => {
     )
 
     expect(hubEvents(stateDir).length).toBeGreaterThan(0)
+  })
+
+  test("uses the hubGroup override for the hub directory", async () => {
+    const repo = seedRepo([])
+    const stateDir = tempDir("state-")
+    const hooks = await startPlugin(repo, stateDir, { hubGroup: "shared-swarm" })
+
+    await hooks["tool.execute.before"]?.(
+      { tool: "bash", sessionID: "ses_group00000001", callID: "call-group" },
+      { args: { command: "ls -la" } },
+    )
+
+    expect(readEventRecords(hubRoot(stateDir, "shared-swarm")).length).toBeGreaterThan(0)
+    expect(readEventRecords(hubRoot(stateDir, PROJECT_ID)).length).toBe(0)
   })
 
   test("falls back when path.get hangs", async () => {

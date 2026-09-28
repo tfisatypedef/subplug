@@ -29,6 +29,7 @@ type SubplugOptions = {
   injectIdentity: boolean
   injectComms: boolean
   storageDir?: string
+  hubGroup?: string
   retentionBytes?: number
   maxAgeMs: number
 }
@@ -96,6 +97,10 @@ function resolveOptions(options?: Record<string, unknown>): SubplugOptions {
     injectIdentity: toBool(coord.injectIdentity, toBool(root.injectIdentity, envInject)),
     injectComms: toBool(comms.inject, toBool(root.injectComms, true)),
     storageDir: toStringValue(coord.storageDir) ?? toStringValue(root.storageDir) ?? envStorage,
+    hubGroup:
+      toStringValue(coord.hubGroup) ??
+      toStringValue(root.hubGroup) ??
+      toStringValue(process.env.SUBPLUG_HUB_GROUP),
     retentionBytes: toNumber(coord.retentionBytes) ?? toNumber(root.retentionBytes),
     maxAgeMs: toNumber(coord.maxAgeMs) ?? toNumber(root.maxAgeMs) ?? 24 * 60 * 60 * 1000,
   }
@@ -367,7 +372,7 @@ const server: Plugin = async (input, options) => {
     initialization ??= (async () => {
       const stateDir = await resolveStateDir(input, cfg.storageDir)
       const projectID = toStringValue(input.project?.id) ?? "unknown"
-      const dir = hubRoot(stateDir, projectID)
+      const dir = hubRoot(stateDir, cfg.hubGroup ?? projectID)
       mkdirSync(dir, { recursive: true })
       const eventLog = new EventLog(dir, serverID, cfg.retentionBytes)
       for (const record of readEventRecords(dir, { maxAgeMs: cfg.maxAgeMs })) {
