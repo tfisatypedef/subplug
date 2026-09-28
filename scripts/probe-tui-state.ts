@@ -28,8 +28,12 @@ const probe: TuiPlugin = async (api) => {
         : undefined
       await new Promise((resolve) => setTimeout(resolve, 2500))
       const viaClient = childID ? await api.client.session.messages({ sessionID: childID }) : undefined
+      const storeMessages = childID ? api.state.session.messages(childID) : []
+      const storeParts = storeMessages.at(-1)?.id ? api.state.part(storeMessages.at(-1)!.id) : []
       write({
         count: api.state.session.count(),
+        childStoreParts: storeParts.length,
+        childStorePartTypes: storeParts.map((part) => part.type),
         root: rootID
           ? {
               id: rootID,

@@ -3,11 +3,18 @@ import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import type { KeyEvent, RGBA, Renderable } from "@opentui/core"
 import { createBindingLookup, type BindingConfig } from "@opentui/keymap/extras"
-import { createSignal, onCleanup } from "solid-js"
+import { createEffect, createSignal, onCleanup } from "solid-js"
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule, TuiSlotPlugin } from "@opencode-ai/plugin/tui"
 import type { ClaimRecord, MonitorState, SessionNode } from "../shared/types.ts"
 import { joinClaimsToSessions, lastCommandBySession, readMonitorState, type LastCommand } from "../hub/monitor.ts"
 import { buildSessionTree, flattenTree, rollupSubtree, type SubtreeRollup, type TreeRow } from "../hub/tree.ts"
+import {
+  buildTranscriptRows,
+  type TranscriptMessage,
+  type TranscriptPart,
+  type TranscriptRow,
+  type TranscriptTokens,
+} from "../shared/transcript.ts"
 import { hubRoot } from "../hub/paths.ts"
 import { findRepoRoot } from "../coord/repo.ts"
 
@@ -178,23 +185,72 @@ function rollupDetail(rollup: SubtreeRollup): string {
   return parts.join(" · ")
 }
 
-type MessageInfo = {
-  role?: string
-  agent?: string
-  modelID?: string
-  providerID?: string
-  tokens?: { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } }
-  cost?: number
+function transcriptLine(row: TranscriptRow, skin: Skin) {
+  switch (row.kind) {
+    case "text":
+      return (
+        <text fg={row.role === "user" ? skin.text : skin.muted}>
+          <span style={{ fg: row.role === "user" ? skin.accent : skin.success }}>{row.role}</span>
+          {row.agent ? ` ${row.agent}` : ""}: {row.text}
+        </text>
+      )
+    case "reasoning":
+      return (
+        <text fg={skin.muted}>
+          [reasoning {compactTokens(row.chars)}] {row.preview ?? ""}
+        </text>
+      )
+    case "tool":
+      return (
+        <box flexDirection="column">
+          <text fg={row.status === "error" ? skin.error : row.status === "running" ? skin.success : skin.muted}>
+            [tool] {row.tool} {row.status}
+            {row.title ? ` · ${row.title}` : ""}
+            {typeof row.elapsedMs === "number" ? ` · ${formatDuration(row.elapsedMs)}` : ""}
+          </text>
+          {row.error ? <text fg={skin.error}> {row.error}</text> : null}
+          {row.outputTail ? <text fg={skin.muted}> {row.outputTail}</text> : null}
+        </box>
+      )
+    case "file":
+      return (
+        <text fg={skin.muted}>
+          [file] {row.filename}
+          {row.mime ? ` (${row.mime})` : ""}
+        </text>
+      )
+    case "patch":
+      return (
+        <text fg={skin.muted}>
+          [patch] {row.files} file{row.files === 1 ? "" : "s"}
+        </text>
+      )
+    case "agent":
+      return <text fg={skin.muted}>[agent] {row.name}</text>
+    case "retry":
+      return <text fg={skin.warning}>[retry #{row.attempt}]</text>
+    case "compaction":
+      return <text fg={skin.warning}>[compaction{row.auto ? " auto" : ""}]</text>
+    case "step":
+      return (
+        <text fg={skin.muted}>
+          [step]
+          {typeof row.cost === "number" ? ` $${row.cost.toFixed(4)}` : ""}
+          {typeof row.tokens === "number" ? ` · ${compactTokens(row.tokens)} tokens` : ""}
+        </text>
+      )
+    default:
+      return <text fg={skin.muted}>[{row.label}]</text>
+  }
 }
-
-type MessageRow = { info?: MessageInfo; parts?: Array<Record<string, unknown>> }
 
 type SessionDetailState = {
   todos: Array<{ content: string; status: string }>
-  messages: Array<{ role: string; agent?: string; model?: string; text: string }>
+  rows: TranscriptRow[]
   tokens: number
   cost: number
   contextLimit?: number
+  source: TranscriptSource["source"]
 }
 
 function unwrapData<T>(response: unknown): T | undefined {
@@ -203,73 +259,191 @@ function unwrapData<T>(response: unknown): T | undefined {
   return data === undefined ? (response as T) : data
 }
 
-function summarizeMessage(parts: Array<Record<string, unknown>> | undefined, maxChars = 240): string {
-  const pieces: string[] = []
-  for (const part of parts ?? []) {
-    if (part.type === "text" && typeof part.text === "string") {
-      const text = part.text.replace(/\s+/g, " ").trim()
-      if (text) pieces.push(text)
-      continue
-    }
-    if (part.type === "tool" && typeof part.tool === "string") {
-      const state = record(part.state) ? (part.state as Record<string, unknown>) : {}
-      const status = typeof state.status === "string" ? state.status : ""
-      pieces.push(`[${part.tool}${status ? ` ${status}` : ""}]`)
-    }
-  }
-  const text = pieces.filter(Boolean).join(" ")
-  return text.length > maxChars ? `${text.slice(0, maxChars - 1)}…` : text
+function maybeNum(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined
 }
 
-async function loadSessionDetail(api: TuiPluginApi, sessionID: string): Promise<SessionDetailState> {
-  const state: SessionDetailState = { todos: [], messages: [], tokens: 0, cost: 0 }
-  const client = api.client as unknown as {
-    session: {
-      todo: (input: { sessionID: string }) => Promise<unknown>
-      messages: (input: { sessionID: string; limit?: number }) => Promise<unknown>
-    }
+function toTokens(value: unknown): TranscriptTokens | undefined {
+  const tokens = record(value) ? value : undefined
+  if (!tokens) return undefined
+  const cache = record(tokens.cache) ? tokens.cache : undefined
+  return {
+    input: maybeNum(tokens.input),
+    output: maybeNum(tokens.output),
+    reasoning: maybeNum(tokens.reasoning),
+    cache: cache ? { read: maybeNum(cache.read), write: maybeNum(cache.write) } : undefined,
   }
-  const [todoResult, messageResult] = await Promise.allSettled([
-    client.session.todo({ sessionID }),
-    client.session.messages({ sessionID, limit: 20 }),
-  ])
+}
 
-  if (todoResult.status === "fulfilled") {
-    const rows = unwrapData<Array<{ content?: string; status?: string }>>(todoResult.value)
-    if (Array.isArray(rows)) {
-      state.todos = rows
-        .filter((row) => typeof row?.content === "string")
-        .map((row) => ({ content: String(row.content), status: String(row.status ?? "pending") }))
-    }
+function toTranscriptMessage(value: unknown): TranscriptMessage {
+  const info = record(value) ? value : {}
+  const model = record(info.model) ? info.model : undefined
+  const time = record(info.time) ? info.time : undefined
+  const modelID =
+    typeof info.modelID === "string"
+      ? info.modelID
+      : typeof model?.modelID === "string"
+        ? model.modelID
+        : typeof model?.id === "string"
+          ? model.id
+          : undefined
+  return {
+    id: typeof info.id === "string" ? info.id : "",
+    role: typeof info.role === "string" ? info.role : "?",
+    agent: typeof info.agent === "string" ? info.agent : undefined,
+    model: modelID,
+    providerID: typeof info.providerID === "string" ? info.providerID : undefined,
+    cost: maybeNum(info.cost),
+    tokens: toTokens(info.tokens),
+    time: time ? { created: maybeNum(time.created), completed: maybeNum(time.completed) } : undefined,
   }
+}
 
-  if (messageResult.status === "fulfilled") {
-    const rows = unwrapData<MessageRow[]>(messageResult.value)
-    if (Array.isArray(rows)) {
-      state.messages = rows.map((row) => ({
-        role: String(row.info?.role ?? "?"),
-        agent: row.info?.agent,
-        model: row.info?.modelID,
-        text: summarizeMessage(row.parts),
-      }))
-      const assistant = [...rows].reverse().find((row) => row.info?.role === "assistant" && row.info?.tokens)
-      const tokens = assistant?.info?.tokens
-      if (tokens) {
-        state.tokens =
-          (tokens.input ?? 0) +
-          (tokens.output ?? 0) +
-          (tokens.reasoning ?? 0) +
-          (tokens.cache?.read ?? 0) +
-          (tokens.cache?.write ?? 0)
-        state.cost = assistant?.info?.cost ?? 0
-        const provider = api.state.provider.find((item) => item.id === assistant?.info?.providerID)
-        const modelID = assistant?.info?.modelID
-        const model = modelID ? provider?.models[modelID] : undefined
-        state.contextLimit = model?.limit.context
+function toTranscriptPart(value: unknown): TranscriptPart {
+  const part = record(value) ? value : {}
+  const state = record(part.state) ? part.state : undefined
+  const time = state && record(state.time) ? state.time : undefined
+  const files = Array.isArray(part.files)
+    ? part.files.filter((item): item is string => typeof item === "string")
+    : undefined
+  return {
+    id: typeof part.id === "string" ? part.id : undefined,
+    type: typeof part.type === "string" ? part.type : "unknown",
+    text: typeof part.text === "string" ? part.text : undefined,
+    tool: typeof part.tool === "string" ? part.tool : undefined,
+    callID: typeof part.callID === "string" ? part.callID : undefined,
+    state: state
+      ? {
+          status: typeof state.status === "string" ? state.status : undefined,
+          title: typeof state.title === "string" ? state.title : undefined,
+          output: typeof state.output === "string" ? state.output : undefined,
+          error: typeof state.error === "string" ? state.error : undefined,
+          time: time ? { start: maybeNum(time.start), end: maybeNum(time.end) } : undefined,
+        }
+      : undefined,
+    filename: typeof part.filename === "string" ? part.filename : undefined,
+    mime: typeof part.mime === "string" ? part.mime : undefined,
+    url: typeof part.url === "string" ? part.url : undefined,
+    files,
+    hash: typeof part.hash === "string" ? part.hash : undefined,
+    name: typeof part.name === "string" ? part.name : undefined,
+    auto: typeof part.auto === "boolean" ? part.auto : undefined,
+    attempt: maybeNum(part.attempt),
+    cost: maybeNum(part.cost),
+    tokens: toTokens(part.tokens),
+  }
+}
+
+type TranscriptSource = {
+  source: "store" | "client" | "none"
+  messages: TranscriptMessage[]
+  partsFor: (messageID: string) => readonly TranscriptPart[]
+}
+
+const TRANSCRIPT_LIMIT = 60
+const TRANSCRIPT_WINDOW = 10
+
+async function loadTranscript(api: TuiPluginApi, sessionID: string): Promise<TranscriptSource> {
+  const store = api.state.session
+  if (store.get(sessionID)) {
+    const messages = store.messages(sessionID)
+    if (messages.length) {
+      const transcript = messages.map((message) => toTranscriptMessage(message))
+      const parts = new Map<string, TranscriptPart[]>()
+      let partCount = 0
+      for (const message of transcript) {
+        const list = api.state.part(message.id).map((part) => toTranscriptPart(part))
+        partCount += list.length
+        parts.set(message.id, list)
+      }
+      if (partCount > 0) {
+        return { source: "store", messages: transcript, partsFor: (id) => parts.get(id) ?? [] }
       }
     }
   }
+
+  const client = api.client as unknown as {
+    session: { messages: (input: { sessionID: string; limit?: number }) => Promise<unknown> }
+  }
+  try {
+    const rows = unwrapData<Array<{ info?: Record<string, unknown>; parts?: Array<Record<string, unknown>> }>>(
+      await client.session.messages({ sessionID, limit: TRANSCRIPT_LIMIT }),
+    )
+    if (Array.isArray(rows) && rows.length) {
+      const messages = rows.map((row) => toTranscriptMessage(row.info))
+      const parts = new Map<string, TranscriptPart[]>()
+      rows.forEach((row, index) => {
+        const messageID = messages[index]?.id ?? ""
+        parts.set(
+          messageID,
+          (row.parts ?? []).map((part) => toTranscriptPart(part)),
+        )
+      })
+      return { source: "client", messages, partsFor: (id) => parts.get(id) ?? [] }
+    }
+  } catch {
+    // fall through to an empty transcript
+  }
+  return { source: "none", messages: [], partsFor: () => [] }
+}
+
+function contextUsage(messages: readonly TranscriptMessage[]): {
+  tokens: number
+  cost: number
+  providerID?: string
+  modelID?: string
+} {
+  let tokens = 0
+  let cost = 0
+  let providerID: string | undefined
+  let modelID: string | undefined
+  for (const message of messages) {
+    if (message.role !== "assistant") continue
+    cost += message.cost ?? 0
+    const input = message.tokens?.input ?? 0
+    if (input > tokens) {
+      tokens = input
+      providerID = message.providerID
+      modelID = message.model
+    }
+  }
+  return { tokens, cost, providerID, modelID }
+}
+
+async function loadSessionDetail(api: TuiPluginApi, sessionID: string): Promise<SessionDetailState> {
+  const state: SessionDetailState = { todos: [], rows: [], tokens: 0, cost: 0, source: "none" }
+  const client = api.client as unknown as {
+    session: { todo: (input: { sessionID: string }) => Promise<unknown> }
+  }
+  const [todoResult, transcript] = await Promise.all([
+    client.session.todo({ sessionID }).catch(() => undefined),
+    loadTranscript(api, sessionID),
+  ])
+
+  const todoRows = unwrapData<Array<{ content?: string; status?: string }>>(todoResult)
+  if (Array.isArray(todoRows)) {
+    state.todos = todoRows
+      .filter((row) => typeof row?.content === "string")
+      .map((row) => ({ content: String(row.content), status: String(row.status ?? "pending") }))
+  }
+
+  state.source = transcript.source
+  state.rows = buildTranscriptRows(transcript.messages.slice(-TRANSCRIPT_LIMIT), transcript.partsFor, {
+    now: Date.now(),
+  })
+  const usage = contextUsage(transcript.messages)
+  state.tokens = usage.tokens
+  state.cost = usage.cost
+  const provider = usage.providerID ? api.state.provider.find((item) => item.id === usage.providerID) : undefined
+  const model = usage.modelID ? provider?.models[usage.modelID] : undefined
+  state.contextLimit = model?.limit.context
   return state
+}
+
+function formatDuration(ms: number): string {
+  const seconds = ms / 1000
+  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`
+  return `${Math.floor(seconds / 60)}m${Math.round(seconds % 60)}s`
 }
 
 function compactTokens(value: number): string {
@@ -571,9 +745,17 @@ function SessionDetail(props: {
   trail: () => string[]
   descend: (sessionID: string) => void
   back: () => void
+  intervalMs: number
 }) {
   const skin = () => skinOf(props.api)
-  const [detail, setDetail] = createSignal<SessionDetailState>({ todos: [], messages: [], tokens: 0, cost: 0 })
+  const [detail, setDetail] = createSignal<SessionDetailState>({ todos: [], rows: [], tokens: 0, cost: 0, source: "none" })
+  const [scroll, setScroll] = createSignal(0)
+  const maxScroll = () => Math.max(0, detail().rows.length - TRANSCRIPT_WINDOW)
+  const visibleRows = () => {
+    const rows = detail().rows
+    const end = Math.max(0, rows.length - Math.min(scroll(), maxScroll()))
+    return rows.slice(Math.max(0, end - TRANSCRIPT_WINDOW), end)
+  }
   const session = () => props.state().sessions.find((item) => item.sessionID === props.sessionID())
   const children = () => props.state().sessions.filter((item) => item.parentID === props.sessionID())
   const claims = () => {
@@ -628,13 +810,19 @@ function SessionDetail(props: {
     }
   }
   void refresh()
-  const timer = setInterval(() => void refresh(), 1500)
+  const timer = setInterval(() => void refresh(), Math.max(500, props.intervalMs))
   onCleanup(() => clearInterval(timer))
+  createEffect(() => {
+    props.sessionID()
+    setScroll(0)
+  })
 
   const detailKeys: BindingConfig<Renderable, KeyEvent> = {
     "subplug.detail.next": "down",
     "subplug.detail.prev": "up",
     "subplug.detail.descend": "return",
+    "subplug.detail.scroll.up": "pageup",
+    "subplug.detail.scroll.down": "pagedown",
     "subplug.back": ["escape", "q"],
   }
   const keys = createBindingLookup(detailKeys)
@@ -644,6 +832,18 @@ function SessionDetail(props: {
       { name: "subplug.detail.next", title: "Subplug: next subagent", category: "Plugin", run: () => moveChild(1) },
       { name: "subplug.detail.prev", title: "Subplug: previous subagent", category: "Plugin", run: () => moveChild(-1) },
       { name: "subplug.detail.descend", title: "Subplug: open subagent", category: "Plugin", run: () => descend() },
+      {
+        name: "subplug.detail.scroll.up",
+        title: "Subplug: scroll transcript up",
+        category: "Plugin",
+        run: () => setScroll(Math.min(maxScroll(), scroll() + TRANSCRIPT_WINDOW)),
+      },
+      {
+        name: "subplug.detail.scroll.down",
+        title: "Subplug: scroll transcript down",
+        category: "Plugin",
+        run: () => setScroll(Math.max(0, scroll() - TRANSCRIPT_WINDOW)),
+      },
       {
         name: "subplug.back",
         title: "Subplug: back",
@@ -655,6 +855,8 @@ function SessionDetail(props: {
       "subplug.detail.next",
       "subplug.detail.prev",
       "subplug.detail.descend",
+      "subplug.detail.scroll.up",
+      "subplug.detail.scroll.down",
       "subplug.back",
     ]),
   })
@@ -665,11 +867,12 @@ function SessionDetail(props: {
     if (!value.tokens && !value.contextLimit) return undefined
     const percent = value.contextLimit ? Math.round((value.tokens / value.contextLimit) * 100) : undefined
     const parts = [
-      `tokens ${compactTokens(value.tokens)}${
+      `context ${compactTokens(value.tokens)}${
         value.contextLimit ? ` / ${compactTokens(value.contextLimit)} (${percent}%)` : ""
       }`,
     ]
     if (value.cost) parts.push(`cost $${value.cost.toFixed(4)}`)
+    if (value.source !== "none") parts.push(`src ${value.source}`)
     return parts.join(" · ")
   }
 
@@ -791,19 +994,16 @@ function SessionDetail(props: {
           gap={1}
           flexGrow={1}
         >
-          <text fg={skin().accent}>
-            <b>Conversation (last {detail().messages.length})</b>
-          </text>
-          {detail().messages.length === 0 ? <text fg={skin().muted}>no messages loaded</text> : null}
-          {detail()
-            .messages.slice(-8)
-            .map((message) => (
-              <text fg={message.role === "user" ? skin().text : skin().muted}>
-                <span style={{ fg: message.role === "user" ? skin().accent : skin().success }}>{message.role}</span>
-                {message.agent ? ` ${message.agent}` : ""}
-                {message.model ? ` ${message.model}` : ""}: {message.text}
-              </text>
-            ))}
+          <box flexDirection="row" justifyContent="space-between">
+            <text fg={skin().accent}>
+              <b>Conversation ({detail().rows.length} rows)</b>
+            </text>
+            <text fg={skin().muted}>
+              ↑/↓ subagent · pgup/pgdn scroll{scroll() ? ` (${scroll()})` : ""}
+            </text>
+          </box>
+          {detail().rows.length === 0 ? <text fg={skin().muted}>no transcript loaded</text> : null}
+          {visibleRows().map((row) => transcriptLine(row, skin()))}
         </box>
       </box>
     </box>
@@ -892,6 +1092,7 @@ const tui: TuiPlugin = async (api, options) => {
           trail={() => detailTrail()}
           descend={descendSession}
           back={backFromDetail}
+          intervalMs={cfg.intervalMs}
         />
       ),
     },
