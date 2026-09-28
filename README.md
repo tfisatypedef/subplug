@@ -156,14 +156,20 @@ the request.
 - Sidebar slot **Agents** (order 650, below the internal blocks): the last 8
   sessions, status marks, the current session marker, and the active-claim
   count.
-- Dashboard route `subplug`: a nested session tree (parent/child by depth) with
-  status/agent/model/age, the last bash command and its age, orphan (`?`) and
-  deleted markers, and a per-root subtree rollup (subagent count, busy/error
-  counts, cost). Collapse state is kept in the TUI KV store. The claim list
-  shows expiry, batons, conflicts, and the session each claim is joined to
-  (`⇄ <session>`). Open with the `/subplug` command or `ctrl+alt+a`. `↑`/`↓`
-  selects, `←`/`→` collapses/expands, Enter opens the detail view, `esc`/`q`
-  returns to the view you came from.
+- Dashboard route `subplug` — a codex-style **command center**: status filter
+  tabs (`All / Needs you / Working / Ready / Inactive` with counts), grouping by
+  Project / Status / Agent / Hierarchy (default Project; Hierarchy keeps the
+  nested parent/child tree and its collapse state in the TUI KV store), and rows
+  with a selection caret, status dot, title, status column, and age. A right-hand
+  details pane (terminals ≥ 90 columns) shows the selected session's id,
+  directory, agent, model, identity, subtree rollup, joined claims, pending
+  inbox, last command, and a short transcript preview. Open with the `/subplug`
+  command or `ctrl+alt+a`. `↑`/`↓` selects, `pgup`/`pgdn` page, `home`/`end`
+  jump, `tab`/`shift+tab` cycles the filter, `g` cycles grouping, `/` opens a
+  searchable session picker, `?` toggles help, `←`/`→` collapse/expand in
+  Hierarchy, and Enter opens the selected session: it switches opencode to that
+  session when it belongs to this instance, otherwise it opens the in-plugin
+  `subplug.session` detail. `esc`/`q` returns to the view you came from.
 - Detail route `subplug.session`: breadcrumb, metadata, subtree rollup, todos,
   selectable subagents (Enter descends; `esc` pops back), joined claims, a
   pending **Inbox** panel, and a store-backed live transcript with full parts:
@@ -184,8 +190,10 @@ the request.
 The sidebar **Agents** block is display-only apart from click-to-open: clicking
 it (or pressing `ctrl+alt+a`, or typing `/subplug`) opens the dashboard.
 
-- Dashboard: `↑`/`↓` select a session, `←`/`→` collapse/expand, `Enter` opens the
-  session detail, `f`/`m` sends follow-up context, `Esc`/`q` closes.
+- Dashboard: `↑`/`↓` select, `pgup`/`pgdn` page, `home`/`end` jump,
+  `tab`/`shift+tab` filter, `g` grouping, `/` search, `?` help, `←`/`→`
+  collapse/expand (Hierarchy), `Enter` opens the session (switches to it, or the
+  detail view when it is not local), `f`/`m` follow-up, `Esc`/`q` closes.
 - Session detail: `↑`/`↓` select a subagent, `Enter` descends into it,
   `pgup`/`pgdn` scroll the conversation, `f`/`m` follows up with the viewed session, `Esc`/`q`
   goes back.
@@ -242,12 +250,14 @@ conflict, and a stale risk. In the TUI:
 
 - the sidebar **Agents** slot (bottom) lists both sessions and the active-claim
   count;
-- `/subplug` opens the dashboard: the subagent nested under its parent (with
-  collapse via `←`/`→`), per-root subtree rollups, claims with `⇄ <session>` for
-  the joined holder, and conflict coloring;
-- Enter opens the subagent's detail: breadcrumb, rolled-up subtree cost/counts,
-  a pending **Inbox** (seeded by `--demo`), and a live transcript (tool
-  status/title/output tail) that updates while the demo subagent runs; `m`
+- `/subplug` opens the command center: filter tabs with counts, `g` cycles
+  grouping (Project → Status → Agent → Hierarchy; Hierarchy nests the subagent
+  under its parent with collapse via `←`/`→`), a per-selection details pane with
+  subtree rollup, joined claims (`⇄ <session>`), and conflict coloring;
+- Enter opens the detail view for a session this instance does not own (as in
+  the demo): breadcrumb, rolled-up subtree cost/counts, a pending **Inbox**
+  (seeded by `--demo`), and a live transcript (tool status/title/output tail)
+  that updates while the demo subagent runs; `m`
   opens the composer, which confirms first when the target is busy;
 - in a second terminal run `bun run scripts/dev-harness.ts --poke-risk` to
   append a live risk and confirm the warning toast + attention sound.

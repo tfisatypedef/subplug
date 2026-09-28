@@ -7,11 +7,11 @@ import { createBindingLookup, type BindingConfig } from "@opentui/keymap/extras"
 import { createEffect, createSignal, onCleanup } from "solid-js"
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule, TuiSlotPlugin } from "@opencode-ai/plugin/tui"
 import type { ClaimRecord, MonitorState, SessionNode } from "../shared/types.ts"
-import { joinClaimsToSessions, lastCommandBySession, readMonitorState, type LastCommand } from "../hub/monitor.ts"
+import { joinClaimsToSessions, lastCommandBySession, readMonitorState } from "../hub/monitor.ts"
 import { inboxFor } from "../hub/comms.ts"
 import { EventLog } from "../hub/append.ts"
 import { FollowUpConfirmationRequired, followUpError, sendFollowUp } from "../shared/follow-up.ts"
-import { buildSessionTree, flattenTree, rollupSubtree, type SubtreeRollup, type TreeRow } from "../hub/tree.ts"
+import { rollupSubtree, type SubtreeRollup } from "../hub/tree.ts"
 import {
   buildTranscriptRows,
   type TranscriptMessage,
@@ -21,6 +21,21 @@ import {
 } from "../shared/transcript.ts"
 import { hubRoot } from "../hub/paths.ts"
 import { findRepoRoot } from "../coord/repo.ts"
+import {
+  buildCenterRows,
+  clampIndex,
+  clampWindow,
+  filterCounts,
+  groupingLabel,
+  nextGrouping,
+  selectedDisplayIndex,
+  statusGroup,
+  statusGroupLabel,
+  taskIndexByDisplay,
+  TASK_FILTERS,
+  type Grouping,
+  type StatusGroup,
+} from "./command-center.ts"
 
 type Cfg = {
   route: string
@@ -40,6 +55,8 @@ export type Skin = {
   error: RGBA | string
   warning: RGBA | string
   success: RGBA | string
+  selection: RGBA | string
+  secondary: RGBA | string
 }
 
 const defaultKeymap: BindingConfig<Renderable, KeyEvent> = {
@@ -94,6 +111,8 @@ function skinOf(api: TuiPluginApi): Skin {
     error: theme.error,
     warning: theme.warning,
     success: theme.success,
+    selection: theme.backgroundElement ?? theme.backgroundPanel,
+    secondary: theme.secondary ?? theme.textMuted,
   }
 }
 
@@ -158,17 +177,6 @@ function writeCollapsed(api: TuiPluginApi, collapsed: ReadonlySet<string>): void
   } catch {
     // collapse state is a convenience
   }
-}
-
-function treePrefix(row: TreeRow): string {
-  return row.depth > 0 ? `${"  ".repeat(row.depth - 1)}└ ` : ""
-}
-
-function commandLabel(sessionID: string, commands: Map<string, LastCommand>, now: number): string {
-  const command = commands.get(sessionID)
-  if (!command) return ""
-  const summary = command.summary ? ` ${command.summary.slice(0, 32)}` : ""
-  return ` · ${command.category}${summary} ${age(command.ts, now)} ago`
 }
 
 function rollupLabel(rollup: SubtreeRollup): string | undefined {
@@ -557,6 +565,192 @@ export function Sidebar(props: { state: () => MonitorState; sessionID: string; o
   )
 }
 
+function sessionNeedsInput(api: TuiPluginApi, sessionID: string): boolean {
+  try {
+    const store = api.state.session
+    const permission = store.permission?.(sessionID) ?? []
+    const question = store.question?.(sessionID) ?? []
+    return permission.length > 0 || question.length > 0
+  } catch {
+    return false
+  }
+}
+
+const GROUPING_KEY = "subplug.grouping"
+
+function readGrouping(api: TuiPluginApi): Grouping {
+  try {
+    const value = api.kv.get<unknown>(GROUPING_KEY, "project")
+    if (value === "project" || value === "status" || value === "agent" || value === "hierarchy") return value
+  } catch {
+    // grouping is a convenience
+  }
+  return "project"
+}
+
+function writeGrouping(api: TuiPluginApi, grouping: Grouping): void {
+  try {
+    api.kv.set(GROUPING_KEY, grouping)
+  } catch {
+    // grouping is a convenience
+  }
+}
+
+function groupMark(group: StatusGroup, status: SessionNode["status"]): string {
+  if (group === "needs") return status === "error" ? "!" : "●"
+  if (group === "working") return "●"
+  return "○"
+}
+
+function groupColor(skin: Skin, group: StatusGroup): RGBA | string {
+  if (group === "needs") return skin.error
+  if (group === "working") return skin.success
+  if (group === "ready") return skin.accent
+  return skin.muted
+}
+
+function padEnd(value: string, width: number): string {
+  return value.length >= width ? value.slice(0, width) : `${value}${" ".repeat(width - value.length)}`
+}
+
+function padStart(value: string, width: number): string {
+  return value.length >= width ? value.slice(0, width) : `${" ".repeat(width - value.length)}${value}`
+}
+
+function squish(value: string, width: number): string {
+  if (value.length <= width) return value
+  return width <= 1 ? value.slice(0, width) : `${value.slice(0, width - 1)}…`
+}
+
+function DetailsPane(props: {
+  api: TuiPluginApi
+  state: () => MonitorState
+  session: SessionNode
+  current: boolean
+}) {
+  const skin = () => skinOf(props.api)
+  const snapshot = () => props.state()
+  const now = () => snapshot().generatedAt
+  const group = () => statusGroup(props.session, sessionNeedsInput(props.api, props.session.sessionID))
+  const rollup = () => rollupSubtree(snapshot().sessions, props.session.sessionID)
+  const claims = () =>
+    joinClaimsToSessions(snapshot().registry, snapshot().sessions).filter(
+      ({ session }) => session?.sessionID === props.session.sessionID,
+    )
+  const inbox = () => inboxFor(snapshot().comms, props.session.sessionID, { now: now() })
+  const command = () => lastCommandBySession(snapshot().recentCommands).get(props.session.sessionID)
+  const [preview, setPreview] = createSignal<string[]>([])
+
+  createEffect(() => {
+    const sessionID = props.session.sessionID
+    let cancelled = false
+    setPreview([])
+    void loadTranscript(props.api, sessionID)
+      .then((source) => {
+        if (cancelled) return
+        const rows = buildTranscriptRows(source.messages.slice(-20), source.partsFor, { now: Date.now() })
+        setPreview(
+          rows
+            .filter((row): row is Extract<TranscriptRow, { kind: "text" }> => row.kind === "text")
+            .slice(-4)
+            .map((row) => `${row.role}: ${row.text}`),
+        )
+      })
+      .catch(() => undefined)
+    onCleanup(() => {
+      cancelled = true
+    })
+  })
+
+  return (
+    <box
+      flexDirection="column"
+      flexShrink={0}
+      width={38}
+      minHeight={0}
+      overflow="hidden"
+      paddingLeft={1}
+      paddingRight={1}
+      gap={0}
+    >
+      <text flexShrink={0} fg={skin().accent}>
+        <b>Task details</b>
+      </text>
+      <text flexShrink={0} truncate fg={skin().text}>
+        <b>{sessionLabel(props.session)}</b>
+      </text>
+      <text flexShrink={0} fg={groupColor(skin(), group())}>
+        {groupMark(group(), props.session.status)} {statusGroupLabel(group())}
+        {props.current ? <span style={{ fg: skin().muted }}>  · current</span> : null}
+      </text>
+      <text flexShrink={0}> </text>
+      <text flexShrink={0} fg={skin().muted}>Session</text>
+      <text flexShrink={0} fg={skin().text}>{shortID(props.session.sessionID)}</text>
+      <text flexShrink={0} fg={skin().muted}>Directory</text>
+      <text flexShrink={0} truncate fg={skin().text}>{props.session.directory ?? "—"}</text>
+      {props.session.agent ? (
+        <text flexShrink={0} truncate fg={skin().text}>
+          <span style={{ fg: skin().muted }}>Agent: </span>
+          {props.session.agent}
+        </text>
+      ) : null}
+      {props.session.model ? (
+        <text flexShrink={0} truncate fg={skin().text}>
+          <span style={{ fg: skin().muted }}>Model: </span>
+          {props.session.model}
+        </text>
+      ) : null}
+      {props.session.identity ? (
+        <text flexShrink={0} truncate fg={skin().muted}>{props.session.identity}</text>
+      ) : null}
+      <text flexShrink={0}> </text>
+      <text flexShrink={0} fg={skin().success}>{rollupDetail(rollup())}</text>
+      {command() ? (
+        <text flexShrink={0} truncate fg={skin().muted}>
+          last {command()!.category} · {command()!.summary.slice(0, 40)} · {age(command()!.ts, now())} ago
+        </text>
+      ) : null}
+      {claims().length ? (
+        <>
+          <text flexShrink={0}> </text>
+          <text flexShrink={0} fg={skin().accent}>
+            <b>Claims ({claims().length})</b>
+          </text>
+          {claims().map(({ claim }) => (
+            <text flexShrink={0} truncate fg={skin().text}>
+              <span style={{ fg: skin().muted }}>{claim.claimID.slice(-8)}</span> {claimLabel(claim, now())}
+            </text>
+          ))}
+        </>
+      ) : null}
+      {inbox().length ? (
+        <>
+          <text flexShrink={0}> </text>
+          <text flexShrink={0} fg={skin().accent}>
+            <b>Inbox ({inbox().length})</b>
+          </text>
+          {inbox().map((pointer) => (
+            <text flexShrink={0} truncate fg={skin().text}>
+              <span style={{ fg: skin().muted }}>{pointer.from}</span> {pointer.summary.slice(0, 40)}
+            </text>
+          ))}
+        </>
+      ) : null}
+      {preview().length ? (
+        <>
+          <text flexShrink={0}> </text>
+          <text flexShrink={0} fg={skin().accent}>
+            <b>Recent</b>
+          </text>
+          {preview().map((line) => (
+            <text flexShrink={0} truncate fg={skin().muted}>{line}</text>
+          ))}
+        </>
+      ) : null}
+    </box>
+  )
+}
+
 export function Dashboard(props: {
   api: TuiPluginApi
   state: () => MonitorState
@@ -568,44 +762,130 @@ export function Dashboard(props: {
 }) {
   const snapshot = () => props.state()
   const skin = () => skinOf(props.api)
-  const now = () => snapshot().generatedAt
-  const holders = () => joinClaimsToSessions(snapshot().registry, snapshot().sessions)
   const sessions = () => snapshot().sessions
-  const commands = () => lastCommandBySession(snapshot().recentCommands)
+  const width = () => props.api.renderer?.width ?? 120
   const [collapsed, setCollapsed] = createSignal<Set<string>>(readCollapsed(props.api))
-  const tree = () => buildSessionTree(sessions())
-  const rows = () => flattenTree(tree(), collapsed())
-  const [selected, setSelected] = createSignal(0)
-  const current = () => Math.min(selected(), Math.max(0, rows().length - 1))
+  const [filterIndex, setFilterIndex] = createSignal(0)
+  const [grouping, setGrouping] = createSignal<Grouping>(readGrouping(props.api))
+  const [selectedTask, setSelectedTask] = createSignal(0)
+  const [help, setHelp] = createSignal(false)
+
+  const needsInput = () => {
+    const set = new Set<string>()
+    for (const session of sessions()) {
+      if (sessionNeedsInput(props.api, session.sessionID)) set.add(session.sessionID)
+    }
+    return set
+  }
+  const counts = () => filterCounts(sessions(), needsInput())
+  const data = () =>
+    buildCenterRows(sessions(), {
+      filter: TASK_FILTERS[filterIndex()]?.group ?? null,
+      search: "",
+      grouping: grouping(),
+      collapsed: collapsed(),
+      needsInput: needsInput(),
+    })
+  const rows = () => data().rows
+  const tasks = () => data().tasks
+  const displayIndex = () => selectedDisplayIndex(rows(), selectedTask())
+  const viewport = () => Math.max(3, (props.api.renderer?.height ?? 24) - 9)
+  const start = () => clampWindow(rows().length, Math.max(0, displayIndex()), viewport())
+  const visible = () => rows().slice(start(), start() + viewport())
+  const selected = () => tasks()[clampIndex(selectedTask(), tasks().length)]
+  const currentID = () => {
+    const route = props.api.route?.current
+    if (route && route.name === "session") {
+      const value = route.params?.sessionID
+      if (typeof value === "string") return value
+    }
+    return undefined
+  }
+  const wide = () => width() >= 90
+  const listWidth = () => (wide() ? Math.max(24, width() - 44) : Math.max(16, width() - 4))
+  const showStatus = () => listWidth() >= 56
+  const titleWidth = () => Math.max(8, listWidth() - 5 - (showStatus() ? 11 : 0) - 9)
 
   const move = (delta: number) => {
-    const total = rows().length
+    const total = tasks().length
     if (!total) return
-    setSelected(Math.max(0, Math.min(total - 1, current() + delta)))
+    setSelectedTask(clampIndex(selectedTask() + delta, total))
   }
-  const setCollapse = (collapse: boolean) => {
-    const row = rows()[current()]
-    if (!row || !row.hasChildren) return
-    const next = new Set(collapsed())
-    if (collapse) next.add(row.session.sessionID)
-    else next.delete(row.session.sessionID)
-    setCollapsed(next)
-    writeCollapsed(props.api, next)
-    const index = flattenTree(tree(), next).findIndex((item) => item.session.sessionID === row.session.sessionID)
-    if (index >= 0) setSelected(index)
+  const jump = (to: "top" | "bottom") => {
+    const total = tasks().length
+    if (!total) return
+    setSelectedTask(to === "top" ? 0 : total - 1)
   }
   const open = () => {
-    const row = rows()[current()]
-    if (!row) return
-    props.openSession(row.session.sessionID)
+    const task = selected()
+    if (task) props.openSession(task.session.sessionID)
+  }
+  const setCollapse = (collapse: boolean) => {
+    if (grouping() !== "hierarchy") {
+      if (!collapse) open()
+      return
+    }
+    const task = selected()
+    if (!task || !task.hasChildren) return
+    const next = new Set(collapsed())
+    if (collapse) next.add(task.session.sessionID)
+    else next.delete(task.session.sessionID)
+    setCollapsed(next)
+    writeCollapsed(props.api, next)
+  }
+  const cycleFilter = (delta: number) => {
+    setFilterIndex((index) => (index + delta + TASK_FILTERS.length) % TASK_FILTERS.length)
+  }
+  const cycleGrouping = () => {
+    const next = nextGrouping(grouping())
+    setGrouping(next)
+    writeGrouping(props.api, next)
+  }
+  const openSearch = () => {
+    const DialogSelect = props.api.ui.DialogSelect
+    if (typeof DialogSelect !== "function") return
+    const options = [...sessions()]
+      .sort((a, b) => b.lastEventAt - a.lastEventAt)
+      .map((session) => ({
+        title: sessionLabel(session),
+        value: session.sessionID,
+        description: `${session.status}${session.agent ? ` · ${session.agent}` : ""}${
+          session.directory ? ` · ${session.directory}` : ""
+        }`,
+        category: session.kind === "subagent" ? "Subagents" : "Sessions",
+        onSelect: () => {
+          props.api.ui.dialog.clear()
+          props.openSession(session.sessionID)
+        },
+      }))
+    props.api.ui.dialog.replace(
+      () => (
+        <DialogSelect
+          title="Open session"
+          placeholder="Search sessions"
+          options={options}
+          current={selected()?.session.sessionID}
+        />
+      ),
+      () => undefined,
+    )
   }
 
   const routeKeys: BindingConfig<Renderable, KeyEvent> = {
     "subplug.select.next": "down",
     "subplug.select.prev": "up",
+    "subplug.page.down": "pagedown",
+    "subplug.page.up": "pageup",
+    "subplug.jump.top": "home",
+    "subplug.jump.bottom": "end",
     "subplug.collapse": "left",
     "subplug.expand": ["right", "space"],
     "subplug.open.selected": "return",
+    "subplug.filter.next": "tab",
+    "subplug.filter.prev": "shift+tab",
+    "subplug.group": "g",
+    "subplug.search": "/",
+    "subplug.help": ["?", "h"],
     "subplug.compose": ["f", "m"],
     "subplug.dashboard.back": ["escape", "q"],
   }
@@ -616,36 +896,55 @@ export function Dashboard(props: {
     commands: [
       { name: "subplug.select.next", title: "Subplug: next session", category: "Plugin", run: () => move(1) },
       { name: "subplug.select.prev", title: "Subplug: previous session", category: "Plugin", run: () => move(-1) },
+      { name: "subplug.page.down", title: "Subplug: page down", category: "Plugin", run: () => move(viewport()) },
+      { name: "subplug.page.up", title: "Subplug: page up", category: "Plugin", run: () => move(-viewport()) },
+      { name: "subplug.jump.top", title: "Subplug: first session", category: "Plugin", run: () => jump("top") },
+      { name: "subplug.jump.bottom", title: "Subplug: last session", category: "Plugin", run: () => jump("bottom") },
       { name: "subplug.collapse", title: "Subplug: collapse session", category: "Plugin", run: () => setCollapse(true) },
       { name: "subplug.expand", title: "Subplug: expand session", category: "Plugin", run: () => setCollapse(false) },
-      {
-        name: "subplug.open.selected",
-        title: "Subplug: open session detail",
-        category: "Plugin",
-        run: () => open(),
-      },
+      { name: "subplug.open.selected", title: "Subplug: open session", category: "Plugin", run: () => open() },
+      { name: "subplug.filter.next", title: "Subplug: next filter", category: "Plugin", run: () => cycleFilter(1) },
+      { name: "subplug.filter.prev", title: "Subplug: previous filter", category: "Plugin", run: () => cycleFilter(-1) },
+      { name: "subplug.group", title: "Subplug: cycle grouping", category: "Plugin", run: () => cycleGrouping() },
+      { name: "subplug.search", title: "Subplug: search sessions", category: "Plugin", run: () => openSearch() },
+      { name: "subplug.help", title: "Subplug: toggle help", category: "Plugin", run: () => setHelp((value) => !value) },
       {
         name: "subplug.compose",
         title: "Subplug: send follow-up context",
         category: "Plugin",
         run: () => {
-          const row = rows()[current()]
-          if (row) props.compose(row.session.sessionID, row.session.status)
+          const task = selected()
+          if (task) props.compose(task.session.sessionID, task.session.status)
         },
       },
       {
         name: "subplug.dashboard.back",
         title: "Subplug: close dashboard",
         category: "Plugin",
-        run: () => props.onClose(),
+        run: () => {
+          if (help()) {
+            setHelp(false)
+            return
+          }
+          props.onClose()
+        },
       },
     ],
     bindings: keys.gather("subplug.dashboard", [
       "subplug.select.next",
       "subplug.select.prev",
+      "subplug.page.down",
+      "subplug.page.up",
+      "subplug.jump.top",
+      "subplug.jump.bottom",
       "subplug.collapse",
       "subplug.expand",
       "subplug.open.selected",
+      "subplug.filter.next",
+      "subplug.filter.prev",
+      "subplug.group",
+      "subplug.search",
+      "subplug.help",
       "subplug.compose",
       "subplug.dashboard.back",
     ]),
@@ -668,109 +967,116 @@ export function Dashboard(props: {
         <box flexShrink={0} flexDirection="row" justifyContent="space-between">
           <text flexShrink={0} fg={skin().text}>
             <b>subplug</b>
-            <span style={{ fg: skin().muted }}> swarm dashboard</span>
+            <span style={{ fg: skin().muted }}> command center</span>
+            <span style={{ fg: skin().secondary }}>  Group: {groupingLabel(grouping())}  g</span>
           </text>
-          <text flexShrink={0} fg={skin().muted}>updated {age(snapshot().generatedAt, Date.now())} ago</text>
+          <text flexShrink={0} fg={skin().muted}>
+            claims {snapshot().registry.claims.filter((claim) => claim.status === "active").length} active
+            {snapshot().registry.conflicts.length
+              ? ` · ${snapshot().registry.conflicts.length} conflict${snapshot().registry.conflicts.length === 1 ? "" : "s"}`
+              : ""}
+          </text>
         </box>
-        <text flexShrink={0} fg={skin().muted}>hub {snapshot().hubDir || "(resolving)"}</text>
 
-        <box
-          border
-          borderColor={skin().border}
-          flexDirection="column"
-          flexShrink={0}
-          overflow="hidden"
-          paddingLeft={1}
-          paddingRight={1}
-          paddingTop={1}
-          paddingBottom={1}
-          gap={1}
-          flexGrow={1}
-        >
-          <box flexShrink={0} flexDirection="row" justifyContent="space-between">
-            <text flexShrink={0} fg={skin().accent}>
-              <b>Sessions ({snapshot().sessions.length})</b>
-            </text>
+        <box flexShrink={0} flexDirection="row" gap={2}>
+          {TASK_FILTERS.map((entry, index) => (
             <text
               flexShrink={0}
-              fg={skin().accent}
-              onMouseDown={() => {
-                const row = rows()[current()]
-                if (row) props.compose(row.session.sessionID, row.session.status)
-              }}
+              fg={index === filterIndex() ? skin().accent : skin().muted}
+              onMouseDown={() => setFilterIndex(index)}
             >
-              [f] Follow up
+              {index === filterIndex()
+                ? <b>{`${entry.label} ${counts()[index] ?? 0}`}</b>
+                : `${entry.label} ${counts()[index] ?? 0}`}
             </text>
-          </box>
-          {rows().length === 0 ? <text flexShrink={0} fg={skin().muted}>no sessions recorded yet</text> : null}
-          {rows().map((row, index) => {
-            const rollup = rollupLabel(rollupSubtree(sessions(), row.session.sessionID))
-            return (
-              <box flexShrink={0} flexDirection="column">
-                <text flexShrink={0} fg={statusColor(skin(), row.session.status)}>
-                  <span style={{ fg: index === current() ? skin().accent : skin().muted }}>
-                    {index === current() ? "▸ " : "  "}
-                  </span>
-                  {treePrefix(row)}
-                  {row.hasChildren ? (row.collapsed ? "▸ " : "▾ ") : ""}
-                  {statusMark(row.session.status)} {row.orphan ? "? " : ""}
-                  <span style={{ fg: skin().text }}>{sessionLabel(row.session)}</span>
-                  {row.session.deleted ? <span style={{ fg: skin().error }}> [deleted]</span> : null}
-                  <span style={{ fg: skin().muted }}>
-                    {" "}
-                    {shortID(row.session.sessionID)} {row.session.status} {age(row.session.lastEventAt, now())} ago
-                    {row.session.agent ? ` agent=${row.session.agent}` : ""}
-                    {row.session.model ? ` model=${row.session.model}` : ""}
-                    {commandLabel(row.session.sessionID, commands(), now())}
-                  </span>
-                  {rollup ? <span style={{ fg: skin().success }}> [{rollup}]</span> : null}
-                </text>
-              </box>
-            )
-          })}
+          ))}
         </box>
+        <text flexShrink={0} fg={skin().border}>{"─".repeat(Math.max(0, width() - 4))}</text>
 
-        <box
-          border
-          borderColor={skin().border}
-          flexDirection="column"
-          flexShrink={0}
-          overflow="hidden"
-          paddingLeft={1}
-          paddingRight={1}
-          paddingTop={1}
-          paddingBottom={1}
-          gap={1}
-          flexGrow={1}
-        >
-          <text flexShrink={0} fg={skin().accent}>
-            <b>Claims ({holders().length} active)</b>
-          </text>
-          {holders().length === 0 ? <text flexShrink={0} fg={skin().muted}>no active claims</text> : null}
-          {holders().map(({ claim, session }) => (
-            <text flexShrink={0} fg={skin().text}>
-              <span style={{ fg: skin().muted }}>{claim.claimID.slice(-10)}</span> {claimLabel(claim, now())}
-              {session ? (
-                <span style={{ fg: skin().success }}> ⇄ {session.sessionID.slice(0, 10)}</span>
-              ) : (
-                <span style={{ fg: skin().muted }}> (no session)</span>
-              )}
-              {claim.note ? <span style={{ fg: skin().muted }}> {claim.note.slice(0, 60)}</span> : null}
-            </text>
-          ))}
-          {snapshot().registry.conflicts.map((conflict) => (
-            <text flexShrink={0} fg={skin().error}>
-              conflict {conflict.a.slice(-10)} / {conflict.b.slice(-10)}: {conflict.reason}
-            </text>
-          ))}
-          {snapshot().registry.errors.length > 0 ? (
-            <text flexShrink={0} fg={skin().warning}>registry errors: {snapshot().registry.errors.length}</text>
-          ) : null}
-        </box>
+        {help() ? (
+          <box flexDirection="column" flexShrink={0} gap={0}>
+            <text flexShrink={0} fg={skin().accent}><b>Keyboard shortcuts</b></text>
+            <text flexShrink={0} fg={skin().muted}>Navigate</text>
+            <text flexShrink={0} fg={skin().text}>  ↑/↓ move · pgup/pgdn page · home/end jump</text>
+            <text flexShrink={0} fg={skin().text}>  enter open session · f/m follow-up</text>
+            <text flexShrink={0} fg={skin().muted}>View</text>
+            <text flexShrink={0} fg={skin().text}>  tab/shift+tab filter · g group · / search · ? help</text>
+            <text flexShrink={0} fg={skin().text}>  ←/→ collapse/expand (hierarchy) · esc/q back</text>
+          </box>
+        ) : (
+          <box flexDirection="row" flexGrow={1} minHeight={0} gap={2}>
+            <box flexDirection="column" width={listWidth()} flexShrink={1} minWidth={0} overflow="hidden">
+              <text flexShrink={0} width={listWidth()} truncate fg={skin().muted}>
+                {`${padEnd("", 2)}${padEnd("", 2)}${padEnd("Tasks", titleWidth() + 1)}${showStatus() ? padEnd("Status", 11) : ""}${padStart("Updated", 9)}`}
+              </text>
+              {rows().length === 0 ? <text flexShrink={0} fg={skin().muted}>no sessions recorded yet</text> : null}
+              {start() > 0 ? <text flexShrink={0} fg={skin().muted}>↑</text> : null}
+              {(() => {
+                const indexMap = taskIndexByDisplay(rows())
+                const base = start()
+                const selectedRow = displayIndex()
+                const current = currentID()
+                const needs = needsInput()
+                return visible().map((row, offset) => {
+                  const absolute = base + offset
+                  if (row.kind === "group") {
+                    return (
+                      <text flexShrink={0} width={listWidth()} truncate fg={skin().muted}>
+                        {squish(`${row.label}  ${row.count}`, listWidth())}
+                      </text>
+                    )
+                  }
+                  if (row.kind === "gap") return <text flexShrink={0} width={listWidth()}> </text>
+                  const task = row.task
+                  const taskIndex = indexMap[absolute] ?? -1
+                  const isSelected = absolute === selectedRow
+                  const group = statusGroup(task.session, needs.has(task.session.sessionID))
+                  const rollup = rollupLabel(rollupSubtree(sessions(), task.session.sessionID))
+                  const marker =
+                    `${task.depth > 0 ? `${"  ".repeat(task.depth - 1)}└ ` : ""}` +
+                    `${task.hasChildren ? (task.collapsed ? "▸ " : "▾ ") : ""}` +
+                    `${task.orphan ? "? " : ""}` +
+                    `${current === task.session.sessionID ? "• " : ""}` +
+                    sessionLabel(task.session) +
+                    (rollup ? ` [${rollup}]` : "")
+                  return (
+                    <text
+                      flexShrink={0}
+                      width={listWidth()}
+                      truncate
+                      bg={isSelected ? skin().selection : undefined}
+                      onMouseDown={() => {
+                        if (taskIndex >= 0) setSelectedTask(taskIndex)
+                      }}
+                    >
+                      <span style={{ fg: isSelected ? skin().accent : skin().muted }}>{isSelected ? "› " : "  "}</span>
+                      <span style={{ fg: groupColor(skin(), group) }}>{`${groupMark(group, task.session.status)} `}</span>
+                      <span style={{ fg: skin().text }}>{padEnd(squish(marker, titleWidth()), titleWidth() + 1)}</span>
+                      {showStatus() ? (
+                        <span style={{ fg: groupColor(skin(), group) }}>{padEnd(statusGroupLabel(group), 11)}</span>
+                      ) : null}
+                      <span style={{ fg: skin().muted }}>
+                        {padStart(age(task.session.lastEventAt, snapshot().generatedAt), 9)}
+                      </span>
+                    </text>
+                  )
+                })
+              })()}
+              {start() + viewport() < rows().length ? <text flexShrink={0} fg={skin().muted}>↓</text> : null}
+            </box>
+            {wide() && selected() ? (
+              <DetailsPane
+                api={props.api}
+                state={props.state}
+                session={selected()!.session}
+                current={currentID() === selected()!.session.sessionID}
+              />
+            ) : null}
+          </box>
+        )}
 
         <text flexShrink={0} fg={skin().muted}>
-          ↑/↓ select · ←/→ collapse · enter open · f/m follow-up · esc/q back · /{props.route} reopens · {props.command}{" "}
-          from the palette
+          ↑/↓ move · enter open · tab filter · g group · / search · ? help · f/m follow-up · esc/q back
         </text>
       </box>
     </box>
@@ -1220,6 +1526,16 @@ const tui: TuiPlugin = async (api, options) => {
 
   const [detailTrail, setDetailTrail] = createSignal<string[]>([])
   const openSession = (sessionID: string) => {
+    let known = false
+    try {
+      known = Boolean(api.state.session.get(sessionID))
+    } catch {
+      known = false
+    }
+    if (known) {
+      api.route.navigate("session", { sessionID })
+      return
+    }
     setDetailTrail([sessionID])
     api.route.navigate(`${cfg.route}.session`, { sessionID })
   }

@@ -39,15 +39,17 @@ function monitorState(): MonitorState {
   }
 }
 
-function stubApi(): TuiPluginApi {
+function stubApi(width = WIDTH, height = HEIGHT): TuiPluginApi {
   return {
     theme: {
       current: {
         backgroundPanel: "#000000",
+        backgroundElement: "#101010",
         border: "#333333",
         text: "#ffffff",
         textMuted: "#888888",
         primary: "#5f87ff",
+        secondary: "#c0c0c0",
         error: "#ff0000",
         warning: "#ffaa00",
         success: "#00ff00",
@@ -55,9 +57,11 @@ function stubApi(): TuiPluginApi {
     },
     kv: { get: () => [], set: () => undefined },
     keymap: { registerLayer: () => () => undefined },
+    route: { current: { name: "home" } },
+    renderer: { width, height },
     ui: { dialog: { open: false } },
     state: {
-      session: { get: () => undefined },
+      session: { get: () => undefined, permission: () => [], question: () => [] },
       part: () => [],
       provider: { find: () => undefined },
     },
@@ -94,6 +98,8 @@ const SKIN: Skin = {
   error: "#ff0000",
   warning: "#ffaa00",
   success: "#00ff00",
+  selection: "#101010",
+  secondary: "#c0c0c0",
 }
 
 function gap(line: string, left: string, right: string): number {
@@ -102,10 +108,10 @@ function gap(line: string, left: string, right: string): number {
 }
 
 describe("subplug TUI layout", () => {
-  test("dashboard sits inside the host shell with full-width rows and panels", async () => {
+  test("command center renders filter tabs, columns, and a details pane", async () => {
     const setup = await renderHosted(() => (
       <Dashboard
-        api={stubApi()}
+        api={stubApi(WIDTH, HEIGHT)}
         state={monitorState}
         route="subplug"
         command="subplug.open"
@@ -116,15 +122,21 @@ describe("subplug TUI layout", () => {
     ))
     const lines = setup.captureCharFrame().split("\n")
 
-    const header = lines.find((line) => line.includes("swarm dashboard"))
+    const header = lines.find((line) => line.includes("command center"))
     expect(header).toBeDefined()
     expect(header?.indexOf("subplug")).toBe(2)
-    expect(header?.trimEnd().length).toBe(WIDTH - 2)
-    expect(header?.trimEnd().endsWith("ago")).toBe(true)
+    expect(header?.includes("Group: Project")).toBe(true)
+    expect(header?.includes("claims")).toBe(true)
 
-    const title = lines.find((line) => line.includes("Sessions (2)"))
-    expect(title?.indexOf("Sessions")).toBe(4)
-    expect(title?.trimEnd().endsWith("│")).toBe(true)
+    const filters = lines.find((line) => line.includes("All 2"))
+    expect(filters).toBeDefined()
+    expect(filters?.includes("Needs you 0")).toBe(true)
+    expect(filters?.includes("Ready 2")).toBe(true)
+
+    const columns = lines.find((line) => line.includes("Tasks") && line.includes("Status"))
+    expect(columns).toBeDefined()
+    expect(lines.some((line) => line.includes("Task details"))).toBe(true)
+    expect(lines.some((line) => line.includes("root session"))).toBe(true)
     setup.renderer.destroy()
   })
 
@@ -159,7 +171,7 @@ describe("subplug TUI layout", () => {
     setup.renderer.destroy()
   })
 
-  test("a short terminal clips panels instead of overlapping rows", async () => {
+  test("a narrow terminal hides the details pane and keeps rows on one line", async () => {
     const sessions = Array.from({ length: 24 }, (_, index) =>
       session({
         sessionID: `ses_${String(index).padStart(12, "0")}`,
@@ -170,7 +182,7 @@ describe("subplug TUI layout", () => {
     const setup = await renderHosted(
       () => (
         <Dashboard
-          api={stubApi()}
+          api={stubApi(60, 14)}
           state={() => state}
           route="subplug"
           command="subplug.open"
@@ -183,11 +195,11 @@ describe("subplug TUI layout", () => {
       14,
     )
     const lines = setup.captureCharFrame().split("\n")
+    expect(lines.some((line) => line.includes("Task details"))).toBe(false)
     const sessionLines = lines.filter((line) => /session \d\d/.test(line))
-    expect(sessionLines.length).toBeGreaterThan(2)
+    expect(sessionLines.length).toBeGreaterThan(0)
     for (const line of sessionLines) {
       expect(line.match(/session \d\d/g)?.length).toBe(1)
-      expect(line.startsWith("  │")).toBe(true)
     }
     setup.renderer.destroy()
   })
@@ -238,6 +250,45 @@ describe("subplug TUI layout", () => {
     await setup.renderOnce()
     expect(opened).toBe(1)
     setup.renderer.destroy()
+  })
+})
+
+describe("TUI command center keys", () => {
+  test("Enter opens the selected session; help toggles before back", async () => {
+    const keys = createTestKeymap({ defaultKeys: true })
+    registerEnabledFields(keys.keymap)
+    const opened: string[] = []
+    let backs = 0
+    const api = {
+      ...stubApi(WIDTH, HEIGHT),
+      keymap: keys.keymap,
+      route: { current: { name: "session", params: { sessionID: "ses_root00000001" } } },
+    } as unknown as TuiPluginApi
+    const setup = await renderHosted(() => (
+      <Dashboard
+        api={api}
+        state={monitorState}
+        route="subplug"
+        command="subplug.open"
+        onClose={() => { backs += 1 }}
+        openSession={(id) => { opened.push(id) }}
+        compose={() => undefined}
+      />
+    ))
+    try {
+      keys.host.press("return")
+      expect(opened).toEqual(["ses_child0000001"])
+
+      keys.host.press("h")
+      keys.host.press("escape")
+      expect(backs).toBe(0)
+      keys.host.press("escape")
+      expect(backs).toBe(1)
+      expect(keys.diagnostics.errors).toHaveLength(0)
+    } finally {
+      setup.renderer.destroy()
+      keys.cleanup()
+    }
   })
 })
 

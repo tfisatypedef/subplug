@@ -6,8 +6,9 @@ working on a project, overlaid with the `coordination/` claim registry.
 Status: **P0–P5 complete; P6 (cross-process + portability) partially
 implemented**. Server tap, session fold, coord bridge, `swarm_status`
 (text/json/tree + inbox pull), `swarm_send`, queue-only inbox-notice injection,
-`shell.env` identity injection, TUI sidebar/route/toasts, the nested session
-tree with collapse/rollups, the store-backed transcript, session cost folding,
+`shell.env` identity injection, TUI sidebar/route/toasts, the codex-style
+command center (filter tabs, grouping, search, help, details pane) with
+Enter-to-switch, a store-backed transcript, session cost folding,
 the TUI composer/inbox, a timeout-guarded state-dir fallback, and a shared-hub
 `hubGroup` are in place. Remaining: live `task`-subagent observation and visual
 TUI checks (see "Implementation status"), the optional web view, and final
@@ -413,6 +414,7 @@ logic; the harness only proves hooks fire and pointers land.
 | P6 review fixes | done | degenerate hub keys -> `unknown`; non-positive timeout guard; globally newest record limit; `EventTail` fresh-comms injection; spike/`--tui`/`--probe-inject` green |
 | TUI layout + sidebar affordance | done | rows/panels constrained to full width, conversation clipped; explicit `flexShrink={0}` on labels/rows/panels stops auto-shrink overlap on short terminals (`flexShrink` defaults to 1 for auto dimensions); sidebar hint + click-to-open; `test/tui.test.tsx` static layout/click/short-terminal tests (note: `@opentui/solid` `testRender` is snapshot-only, async updates do not repaint) |
 | Edit-lease enforcement | done | auto-acquire/refresh via `tools/coord.py lock` for `edit`/`write`/`apply_patch`; `apply_patch` scans add/update/delete plus both sides of a move; denial thrown from `tool.execute.before` outside the monitoring catch; full-session-id identity with a per-repository base cache; `test/leases.test.ts` + `test/lease-enforcement.test.ts` |
+| TUI command center (codex-style dashboard) | done | `src/tui/command-center.ts` pure helpers (`test/command-center.test.ts`, 13 tests); `test/tui.test.tsx` layout (tabs/columns/details/narrow) + keymap tests (Enter open, help/back); Enter switches to the owning session via `api.route.navigate("session", …)` and falls back to `subplug.session` for non-local sessions; `--tui` load |
 
 ## P6 review fixes
 
