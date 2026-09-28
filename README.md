@@ -162,6 +162,20 @@ one synthetic part framed as untrusted data (`comms.inject`, default on).
 - Toasts plus attention sounds on `session.error`, subagent completion, and
   uncovered-commit risk.
 
+### Interacting
+
+The sidebar **Agents** block is display-only apart from click-to-open: clicking
+it (or pressing `ctrl+alt+a`, or typing `/subplug`) opens the dashboard.
+
+- Dashboard: `↑`/`↓` select a session, `←`/`→` collapse/expand, `Enter` opens the
+  session detail, `m` messages the selected session, `Esc`/`q` closes.
+- Session detail: `↑`/`↓` select a subagent, `Enter` descends into it,
+  `pgup`/`pgdn` scroll the conversation, `m` messages that session, `Esc`/`q`
+  goes back.
+- `m` sends immediately to an idle target; busy targets ask for confirmation and
+  are queued for their next step boundary. Agents can also call `swarm_send`
+  directly.
+
 ## Development
 
 ```sh
