@@ -45,6 +45,7 @@ export type SessionNode = {
   errorAt?: number
   deleted?: boolean
   serverID?: string
+  cost?: number
   lastEventAt: number
 }
 
