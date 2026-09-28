@@ -24,6 +24,7 @@ const pokeRisk = process.argv.includes("--poke-risk")
 const inspectMode = process.argv.includes("--inspect")
 const probeComms = process.argv.includes("--probe-comms")
 const probeTuiState = process.argv.includes("--probe-tui-state")
+const probeInject = process.argv.includes("--probe-inject")
 const verbose = process.argv.includes("--verbose")
 
 const serverEntry = join(root, "src", "server", "index.ts").replace(/\\/g, "/")
@@ -573,6 +574,109 @@ async function runProbeComms(): Promise<void> {
   log("comms probe complete")
 }
 
+async function runProbeInject(): Promise<void> {
+  seedRepo()
+  writeConfig()
+  rmSync(stateDir, { recursive: true, force: true })
+
+  let server: ChildProcess | undefined
+  let output = () => ""
+  const failures: string[] = []
+
+  try {
+    const started = await startServerUntilReady()
+    server = started.child
+    output = started.output
+    const rootID = await createProbeSession({ title: "inject root" })
+    const childID = await createProbeSession({ parentID: rootID, title: "inject child" })
+    log(`probe sessions: root=${rootID} child=${childID}`)
+
+    stop(server)
+    await sleep(1000)
+    server = undefined
+
+    const dirs = hubRoots()
+    const hubDir = dirs[0]
+    if (!hubDir) throw new Error("no hub directory was created")
+    const eventLog = new EventLog(hubDir, `probe-inject-${Math.random().toString(16).slice(2, 8)}`)
+    eventLog.append({
+      ts: Date.now(),
+      serverID: "probe-inject",
+      sessionID: childID,
+      kind: "comms.sent",
+      summary: "PROBE_INJECT_NOTICE",
+      refs: { msgID: "msg_probe_inject", to: childID, from: "probe@harness", kind: "message", delivery: "queue" },
+    })
+
+    const restarted = await startServerUntilReady()
+    server = restarted.child
+    output = restarted.output
+
+    void fetch(`${base}/session/${childID}/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent: "build", parts: [{ type: "text", text: "PROBE_INJECT_TRIGGER" }] }),
+      signal: AbortSignal.timeout(30_000),
+    }).catch(() => undefined)
+
+    let injected = false
+    let injectedText = ""
+    let partIds: string[] = []
+    const deadline = Date.now() + 30_000
+    while (Date.now() < deadline && !injected) {
+      try {
+        const messages = (await probeJson(`${base}/session/${childID}/message`)) as Array<{
+          info?: { role?: string }
+          parts?: Array<{ id?: string; type?: string; text?: string; synthetic?: boolean }>
+        }>
+        const user = messages.find(
+          (row) =>
+            row.info?.role === "user" && (row.parts ?? []).some((part) => part.text === "PROBE_INJECT_TRIGGER"),
+        )
+        if (user) {
+          partIds = (user.parts ?? []).map((part) => part.id ?? "?")
+          const synthetic = (user.parts ?? []).find(
+            (part) => part.synthetic && typeof part.text === "string" && part.text.includes("PROBE_INJECT_NOTICE"),
+          )
+          if (synthetic) {
+            injected = true
+            injectedText = synthetic.text ?? ""
+          }
+        }
+      } catch {
+        // keep polling while the prompt is in flight
+      }
+      if (!injected) await sleep(500)
+    }
+
+    log(`synthetic inbox part persisted: ${injected}`)
+    log(`user message part ids: ${JSON.stringify(partIds)}`)
+    if (injected) log(`injected text: ${injectedText.split("\n")[0]}`)
+    if (!injected) failures.push("synthetic inbox part was not persisted on the user message")
+
+    const delivered = await waitFor(
+      () => readEvents(hubDir).some((event) => event.kind === "comms.delivered"),
+      10_000,
+      "comms.delivered",
+    )
+    log(`comms.delivered recorded: ${delivered}`)
+    if (!delivered) failures.push("comms.delivered event missing")
+  } catch (error) {
+    failures.push(String(error))
+    process.stderr.write(output().slice(-4000))
+  } finally {
+    if (server) stop(server)
+    await sleep(500)
+    if (!keep) rmSync(harnessDir, { recursive: true, force: true })
+  }
+
+  if (failures.length) {
+    log(`PROBE FAILED: ${failures.join("; ")}`)
+    process.exit(1)
+  }
+  log("inject probe complete")
+}
+
 async function runTuiStateProbe(): Promise<void> {
   seedRepo()
   const probeEntry = join(root, "scripts", "probe-tui-state.ts").replace(/\\/g, "/")
@@ -821,6 +925,10 @@ async function main(): Promise<void> {
   }
   if (probeTuiState) {
     await runTuiStateProbe()
+    return
+  }
+  if (probeInject) {
+    await runProbeInject()
     return
   }
   await runSpike()

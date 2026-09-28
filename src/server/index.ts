@@ -9,7 +9,7 @@ import { applyRecord } from "../hub/fold.ts"
 import { agentIdentity } from "../hub/identity.ts"
 import { readMonitorState } from "../hub/monitor.ts"
 import { buildSessionTree, flattenTree, rollupSubtree } from "../hub/tree.ts"
-import { inboxFor, messageSummary, resolveTargets } from "../hub/comms.ts"
+import { applyCommsRecord, buildInboxBlock, inboxFor, messageSummary, resolveTargets } from "../hub/comms.ts"
 import { fallbackStateDir, hubRoot, snapshotFile } from "../hub/paths.ts"
 import { findRepoRoot, isCoordinationEnabled } from "../coord/repo.ts"
 import { buildRegistryState, coverageErrors, readAdoptionPaths } from "../coord/claims.ts"
@@ -27,6 +27,7 @@ type ShellRunner = (strings: TemplateStringsArray, ...expressions: unknown[]) =>
 
 type SubplugOptions = {
   injectIdentity: boolean
+  injectComms: boolean
   storageDir?: string
   retentionBytes?: number
   maxAgeMs: number
@@ -88,10 +89,12 @@ function unwrap<T>(response: unknown): T | undefined {
 function resolveOptions(options?: Record<string, unknown>): SubplugOptions {
   const root = asRecord(options)
   const coord = asRecord(root.coord)
+  const comms = asRecord(root.comms)
   const envInject = toBool(process.env.SUBPLUG_INJECT_IDENTITY, false)
   const envStorage = toStringValue(process.env.SUBPLUG_STORAGE_DIR)
   return {
     injectIdentity: toBool(coord.injectIdentity, toBool(root.injectIdentity, envInject)),
+    injectComms: toBool(comms.inject, toBool(root.injectComms, true)),
     storageDir: toStringValue(coord.storageDir) ?? toStringValue(root.storageDir) ?? envStorage,
     retentionBytes: toNumber(coord.retentionBytes) ?? toNumber(root.retentionBytes),
     maxAgeMs: toNumber(coord.maxAgeMs) ?? toNumber(root.maxAgeMs) ?? 24 * 60 * 60 * 1000,
@@ -330,6 +333,7 @@ const server: Plugin = async (input, options) => {
   let log: EventLog | undefined
   let initialization: Promise<{ hubDir: string; log: EventLog }> | undefined
   const sessions = new Map<string, SessionNode>()
+  const comms = new Map<string, CommsPointer>()
   const repoRootCache = new Map<string, string | undefined>()
   let identityBaseCache: string | undefined
   let snapshotTimer: ReturnType<typeof setTimeout> | undefined
@@ -344,6 +348,7 @@ const server: Plugin = async (input, options) => {
       const eventLog = new EventLog(dir, serverID, cfg.retentionBytes)
       for (const record of readEventRecords(dir, { maxAgeMs: cfg.maxAgeMs })) {
         applyRecord(sessions, record)
+        applyCommsRecord(comms, record)
       }
       hubDir = dir
       log = eventLog
@@ -363,6 +368,7 @@ const server: Plugin = async (input, options) => {
     const { log: eventLog } = await ensure()
     eventLog.append(record)
     applyRecord(sessions, record)
+    applyCommsRecord(comms, record)
     scheduleSnapshot()
   }
 
@@ -410,6 +416,56 @@ const server: Plugin = async (input, options) => {
   const SEND_CAP = 5
   const SEND_CAP_WINDOW_MS = 60_000
   const sendTimes = new Map<string, number[]>()
+  let syntheticPartCounter = 0
+
+  const syntheticPartID = (): string => {
+    syntheticPartCounter = syntheticPartCounter % 1296
+    syntheticPartCounter += 1
+    return `prt_${Date.now().toString(36)}${syntheticPartCounter.toString(36)}${Math.random().toString(36).slice(2, 6)}`
+  }
+
+  const injectInbox = async (
+    sessionID: string,
+    messageID: string | undefined,
+    output: { message: { id: string }; parts: unknown[] },
+  ): Promise<void> => {
+    if (!cfg.injectComms) return
+    await ensure()
+    const pending = [...comms.values()]
+      .filter((pointer) => pointer.to === sessionID && pointer.state === "sent")
+      .sort((a, b) => a.ts - b.ts)
+    if (!pending.length) return
+    const fresh = inboxFor(pending, sessionID, { now: now() })
+    if (!fresh.length) return
+    const block = buildInboxBlock(
+      fresh.map((pointer) => ({
+        msgID: pointer.msgID,
+        from: pointer.from,
+        summary: pointer.summary,
+        ts: pointer.ts,
+        kind: pointer.kind,
+      })),
+    )
+    if (!block) return
+    output.parts.push({
+      id: syntheticPartID(),
+      sessionID,
+      messageID: messageID ?? output.message.id,
+      type: "text",
+      text: block.text,
+      synthetic: true,
+      time: { start: now() },
+    })
+    for (const msgID of block.msgIDs) {
+      await append({
+        ts: now(),
+        serverID,
+        sessionID,
+        kind: "comms.delivered",
+        refs: { msgID },
+      })
+    }
+  }
 
   const seedBaseline = async (): Promise<void> => {
     try {
@@ -605,17 +661,19 @@ const server: Plugin = async (input, options) => {
       }
     },
 
-    "chat.message": async (messageInput) => {
+    "chat.message": async (messageInput, output) => {
       try {
         const agent = messageInput.agent
-        if (!agent) return
-        await append({
-          ts: now(),
-          serverID,
-          sessionID: messageInput.sessionID,
-          kind: "session.agent",
-          refs: { agent },
-        })
+        if (agent) {
+          await append({
+            ts: now(),
+            serverID,
+            sessionID: messageInput.sessionID,
+            kind: "session.agent",
+            refs: { agent },
+          })
+        }
+        await injectInbox(messageInput.sessionID, messageInput.messageID, output)
       } catch {
         // ignore
       }

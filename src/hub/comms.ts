@@ -10,48 +10,49 @@ export function messageSummary(text: string, maxChars = COMMS_SUMMARY_CHARS): st
   return collapsed.length > maxChars ? `${collapsed.slice(0, maxChars - 1)}…` : collapsed
 }
 
+export function applyCommsRecord(byID: Map<string, CommsPointer>, record: EventRecord): void {
+  const refs = record.refs ?? {}
+  const msgID = typeof refs.msgID === "string" ? refs.msgID : undefined
+  if (!msgID) return
+
+  if (record.kind === "comms.sent") {
+    const to = typeof refs.to === "string" ? refs.to : record.sessionID
+    if (!to || byID.has(msgID)) return
+    byID.set(msgID, {
+      msgID,
+      from: typeof refs.from === "string" ? refs.from : "unknown",
+      to,
+      kind: typeof refs.kind === "string" ? refs.kind : "message",
+      delivery: typeof refs.delivery === "string" ? refs.delivery : "queue",
+      state: "sent",
+      ts: record.ts,
+      summary:
+        typeof record.summary === "string" && record.summary
+          ? record.summary
+          : typeof refs.summary === "string"
+            ? refs.summary
+            : "",
+      serverID: record.serverID,
+    })
+    return
+  }
+
+  const existing = byID.get(msgID)
+  if (!existing) return
+  if (record.kind === "comms.delivered") {
+    if (existing.state === "sent") existing.state = "delivered"
+    existing.at = record.ts
+    return
+  }
+  if (record.kind === "comms.seen") {
+    existing.state = "seen"
+    existing.at = record.ts
+  }
+}
+
 export function foldComms(records: readonly EventRecord[]): CommsPointer[] {
   const byID = new Map<string, CommsPointer>()
-  const ordered = [...records].sort((a, b) => a.ts - b.ts)
-  for (const record of ordered) {
-    const refs = record.refs ?? {}
-    const msgID = typeof refs.msgID === "string" ? refs.msgID : undefined
-    if (!msgID) continue
-
-    if (record.kind === "comms.sent") {
-      const to = typeof refs.to === "string" ? refs.to : record.sessionID
-      if (!to || byID.has(msgID)) continue
-      byID.set(msgID, {
-        msgID,
-        from: typeof refs.from === "string" ? refs.from : "unknown",
-        to,
-        kind: typeof refs.kind === "string" ? refs.kind : "message",
-        delivery: typeof refs.delivery === "string" ? refs.delivery : "queue",
-        state: "sent",
-        ts: record.ts,
-        summary:
-          typeof record.summary === "string" && record.summary
-            ? record.summary
-            : typeof refs.summary === "string"
-              ? refs.summary
-              : "",
-        serverID: record.serverID,
-      })
-      continue
-    }
-
-    const existing = byID.get(msgID)
-    if (!existing) continue
-    if (record.kind === "comms.delivered") {
-      if (existing.state === "sent") existing.state = "delivered"
-      existing.at = record.ts
-      continue
-    }
-    if (record.kind === "comms.seen") {
-      existing.state = "seen"
-      existing.at = record.ts
-    }
-  }
+  for (const record of [...records].sort((a, b) => a.ts - b.ts)) applyCommsRecord(byID, record)
   return [...byID.values()].sort((a, b) => a.ts - b.ts)
 }
 

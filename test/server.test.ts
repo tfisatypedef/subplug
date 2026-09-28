@@ -647,3 +647,76 @@ describe("server plugin swarm_send", () => {
     expect(hubEvents(stateDir).filter((record) => record.kind === "comms.sent").length).toBe(0)
   })
 })
+
+describe("server plugin comms injection", () => {
+  type MessageHook = (input: Record<string, unknown>, output: Record<string, unknown>) => Promise<void>
+  type SendExecutor = {
+    execute: (
+      args: Record<string, unknown>,
+      context: Record<string, unknown>,
+    ) => Promise<{ output: string; metadata?: Record<string, unknown> }>
+  }
+
+  test("injects pending inbox as one synthetic part and marks delivered", async () => {
+    const repo = seedRepo([])
+    const stateDir = tempDir("state-")
+    const now = Date.now()
+    const prompts: FakePrompt[] = []
+    const hooks = await startPlugin(repo, stateDir, {
+      sessions: [
+        {
+          id: "ses_injecttarget1",
+          projectID: PROJECT_ID,
+          directory: repo,
+          title: "inject target",
+          time: { created: now - 10_000, updated: now - 5_000 },
+        },
+      ],
+      statuses: { ses_injecttarget1: { type: "idle" } },
+      prompts,
+    })
+    const seeded = await waitFor(() => hubEvents(stateDir).some((record) => record.sessionID === "ses_injecttarget1"))
+    expect(seeded).toBe(true)
+
+    const tools = hooks.tool as unknown as Record<string, SendExecutor>
+    const senderContext = { sessionID: "ses_sender0000001", directory: repo, worktree: repo }
+    await tools["swarm_send"]!.execute({ session: "ses_injecttarget1", message: "first note" }, senderContext)
+    await tools["swarm_send"]!.execute({ session: "ses_injecttarget1", message: "second note" }, senderContext)
+
+    const onMessage = hooks["chat.message"] as unknown as MessageHook
+    const parts: Array<Record<string, unknown>> = []
+    await onMessage(
+      { sessionID: "ses_injecttarget1", agent: "build" },
+      { message: { id: "msg_user00000001" }, parts },
+    )
+
+    expect(parts.length).toBe(1)
+    expect(parts[0]).toMatchObject({
+      type: "text",
+      synthetic: true,
+      sessionID: "ses_injecttarget1",
+      messageID: "msg_user00000001",
+    })
+    const text = String(parts[0]?.text ?? "")
+    expect(text).toContain("untrusted data")
+    expect(text).toContain("first note")
+    expect(text).toContain("second note")
+    expect(text).toContain("ses_sender0000001")
+    expect(hubEvents(stateDir).filter((record) => record.kind === "comms.delivered").length).toBe(2)
+
+    const later: Array<Record<string, unknown>> = []
+    await onMessage({ sessionID: "ses_injecttarget1" }, { message: { id: "msg_user00000002" }, parts: later })
+    expect(later.length).toBe(0)
+  })
+
+  test("is a no-op with an empty inbox", async () => {
+    const repo = seedRepo([])
+    const stateDir = tempDir("state-")
+    const hooks = await startPlugin(repo, stateDir)
+    const onMessage = hooks["chat.message"] as unknown as MessageHook
+    const parts: Array<Record<string, unknown>> = []
+    await onMessage({ sessionID: "ses_nobody" }, { message: { id: "msg_user00000003" }, parts })
+    expect(parts.length).toBe(0)
+    expect(hubEvents(stateDir).filter((record) => record.kind === "comms.delivered").length).toBe(0)
+  })
+})
