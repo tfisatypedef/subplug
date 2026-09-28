@@ -294,6 +294,30 @@ describe("server plugin state dir", () => {
 })
 
 describe("server plugin identity", () => {
+  test("overrides shared inherited identities for each session", async () => {
+    const previous = process.env.COORD_AGENT_ID
+    try {
+      const repo = seedRepo([])
+      const hooks = await startPlugin(repo, tempDir("state-"))
+      process.env.COORD_AGENT_ID = "shared@host"
+      const firstID = "ses_same_timestamp_first"
+      const secondID = "ses_same_timestamp_second"
+      const firstOutput = { env: { COORD_AGENT_ID: "shared@host" } }
+      const secondOutput = { env: {} as Record<string, string> }
+
+      await hooks["shell.env"]?.({ cwd: repo, sessionID: firstID }, firstOutput)
+      await hooks["shell.env"]?.({ cwd: repo, sessionID: secondID }, secondOutput)
+
+      expect(firstOutput.env.COORD_AGENT_ID).toBe(`${identity()}/${firstID}`)
+      expect(secondOutput.env.COORD_AGENT_ID).toBe(`${identity()}/${secondID}`)
+      expect(firstOutput.env.COORD_AGENT_ID).not.toBe(secondOutput.env.COORD_AGENT_ID)
+      expect(process.env.COORD_AGENT_ID).toBe("shared@host")
+    } finally {
+      if (previous === undefined) delete process.env.COORD_AGENT_ID
+      else process.env.COORD_AGENT_ID = previous
+    }
+  })
+
   test("every session appends its full session id to the base", async () => {
     const rootID = "ses_root00000000001"
     const childID = "ses_child0000000001"

@@ -829,7 +829,6 @@ const server: Plugin = async (input, options) => {
     "shell.env": async (shellInput, output) => {
       try {
         if (!cfg.injectIdentity) return
-        if (output.env.COORD_AGENT_ID || process.env.COORD_AGENT_ID) return
         const sessionID = shellInput.sessionID
         if (!sessionID) return
         const root = repoRootFor(input.worktree ?? input.directory)
