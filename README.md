@@ -81,7 +81,7 @@ Path plugins must default-export an object with `id` plus either `server` or
 | `coord.injectIdentity` | `false` | Set `COORD_AGENT_ID` via `shell.env` for coordination-enabled repos: roots share `<name>@<host>`; subagents get a unique `<name>@<host>/<sessionID8>`. |
 | `comms.inject` | `true` | Append pending inbox notices as one synthetic part on the recipient's next turn (strict no-op when the inbox is empty); `false` disables. |
 | `storageDir` | opencode state dir | Override the hub root (also `SUBPLUG_STORAGE_DIR`). |
-| `hubGroup` | project id | Override the hub key so multiple clones/windows can share one hub (combine with a shared `storageDir`; also `SUBPLUG_HUB_GROUP`). |
+| `hubGroup` | project id | Override the hub key so multiple clones/windows can share one hub (combine with a shared `storageDir`; also `SUBPLUG_HUB_GROUP`). Sanitized for the filesystem; degenerate values (`.`, `..`, empty) fall back to `unknown`. |
 | `retentionBytes` | 4 MiB | Rotate `events.<server>.jsonl` at this size (one `.1` segment kept). |
 | `maxAgeMs` | 24 h | Ignore records older than this when folding. |
 | `intervalMs` (TUI) | 1000 | Hub poll interval. |
@@ -97,7 +97,11 @@ secrets, and URL credentials. No message bodies, no file contents.
 
 Inter-session comms are metadata pointers only: `comms.sent`/`delivered`/`seen`
 carry `from`, `to`, `msgID`, `kind`, `delivery`, and a redacted summary. Message
-bodies live in the native session store and are never written to the hub.
+bodies live in the native session store and are never written to the hub. Each
+server remembers byte offsets per hub file and reads only new bytes before
+injecting, so pointers written by another clone or window after this server
+started are still delivered on the next turn; re-reads are idempotent (deduped
+by `msgID`).
 
 At startup the server imports the project's existing sessions (metadata only,
 bounded by `maxAgeMs`) so restored sessions appear before they emit new events.

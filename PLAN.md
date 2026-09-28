@@ -396,6 +396,18 @@ logic; the harness only proves hooks fire and pointers land.
 | P5 comms implementation | done | `test/comms.test.ts` pure helpers; `swarm_send` + inbox-pull tests in `test/server.test.ts`; injection `--probe-inject`; TUI composer/inbox `--tui` load; visual check user-run |
 | Probe: injection part persistence + `comms.delivered` | done | `--probe-inject` (see results) |
 | P6 cross-process + portability | partial | state-dir timeout guard + hang test; multi-server fold test; `hubGroup` in server + TUI; CI (`.github/workflows/ci.yml`), `.gitattributes`, LICENSE, `bun.lock`, engines already present; web view not started |
+| P6 review fixes | done | degenerate hub keys -> `unknown`; non-positive timeout guard; globally newest record limit; `EventTail` fresh-comms injection; spike/`--tui`/`--probe-inject` green |
+
+## P6 review fixes
+
+Four review findings fixed post-P6, one per commit (baseline 80 tests):
+
+| Fix | Change | Evidence |
+| --- | --- | --- |
+| Degenerate hub keys | `sanitizeProjectID` strips trailing dots/spaces and maps `""`, `.`, `..`, `...` to `unknown`, so `hubGroup` can no longer escape `<storageDir>/subplug/`. | `test/hub.test.ts` sanitize cases |
+| Non-positive state-dir timeouts | `stateDirTimeoutMs` ignores `<= 0`/non-finite env values and keeps the 1500 ms default; exported for a direct unit test. | `test/server.test.ts` timeout table |
+| Global record limit | `readEventRecords` keeps the globally newest `maxRecords` across all files with a bounded `(ts, seq)` min-heap instead of stopping in lexical file order; `maxRecords: 0` returns `[]`. | `test/hub.test.ts` cross-file limit + tie tests |
+| Stale comms fold | `EventTail` seeds byte-offset/identity cursors per hub file before the initial replay and reads only new bytes on `chat.message`; rotation/shrink resets, partial lines are held, `msgID` dedupe makes re-reads idempotent. | `test/hub.test.ts` EventTail tests; `test/server.test.ts` post-bootstrap pointer injection; `--probe-inject` |
 
 ## Handoff prompt for a fresh window
 
@@ -405,7 +417,7 @@ logic; the harness only proves hooks fire and pointers land.
 > `swarm_status inbox: true` pull with `comms.seen`; inbox-notice injection in
 > `chat.message` (`comms.inject`, in-memory comms fold, dedupe/TTL/byte caps,
 > marks `comms.delivered`); and the TUI `m` composer plus the detail Inbox
-> panel. Automated gate: `bun install; bun run typecheck; bun test` (80 pass);
+> panel. Automated gate: `bun install; bun run typecheck; bun test` (92 pass);
 > `bun run scripts/dev-harness.ts`; `bun run scripts/dev-harness.ts --tui`;
 > `--probe-comms`; `--probe-tui-state`; `--probe-inject`. The user still runs
 > the README manual checks: `--demo --keep` + `opencode` for the visual
@@ -414,7 +426,12 @@ logic; the harness only proves hooks fire and pointers land.
 > timeout-guarded (hang test), the hub folds multiple server logs (test), and
 > `hubGroup` (server + TUI, `SUBPLUG_HUB_GROUP`) lets clones share a hub via a
 > shared `storageDir`; CI, `.gitattributes`, LICENSE, `bun.lock`, and engines
-> already exist. Remaining P6: the optional web view and the publish decision.
+> already exist. The P6 review fixes are also in (see "P6 review fixes"):
+> degenerate hub keys map to `unknown`, non-positive state-dir timeouts are
+> ignored, `readEventRecords` keeps the globally newest records with a bounded
+> `(ts, seq)` heap, and `EventTail` tails only new hub bytes before inbox
+> injection (seeded before the initial replay). Remaining P6: the optional web
+> view and the publish decision.
 > Keep using the flat client for v1 sessions (never the v2 `/api/session`
 > store), read transcripts from `api.state.session.messages()`/`part()` when
 > the store has content, keep `client.path.get()` out of eager plugin init, and
