@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { EventLog, readEventRecords } from "../src/hub/append.ts"
 import { foldSessions, sessionDepth } from "../src/hub/fold.ts"
 import { agentIdentity } from "../src/hub/identity.ts"
-import { joinClaimsToSessions, readMonitorState } from "../src/hub/monitor.ts"
+import { joinClaimsToSessions, lastCommandBySession, readMonitorState } from "../src/hub/monitor.ts"
 import { fallbackStateDir, hubRoot } from "../src/hub/paths.ts"
 import type { EventRecord } from "../src/shared/types.ts"
 
@@ -99,6 +99,29 @@ describe("foldSessions", () => {
       record({ ts: 2, kind: "session.deleted", sessionID: "root" }),
     ])
     expect(sessions[0]?.deleted).toBe(true)
+  })
+
+  test("folds the latest session cost snapshot", () => {
+    const sessions = foldSessions([
+      record({ ts: 1, kind: "session.created", sessionID: "root", refs: { cost: 0 } }),
+      record({ ts: 2, kind: "session.updated", sessionID: "root", refs: { cost: 0.75 } }),
+      record({ ts: 3, kind: "session.updated", sessionID: "root", refs: { cost: 1.5 } }),
+    ])
+    expect(sessions[0]?.cost).toBe(1.5)
+  })
+})
+
+describe("lastCommandBySession", () => {
+  test("keeps the latest command per session", () => {
+    const commands = lastCommandBySession([
+      record({ ts: 1, kind: "command", sessionID: "a", summary: "first", refs: { category: "test" } }),
+      record({ ts: 2, kind: "command", sessionID: "b", summary: "other", refs: { category: "git-commit" } }),
+      record({ ts: 3, kind: "command", sessionID: "a", summary: "second", refs: { category: "git-push" } }),
+      record({ ts: 4, kind: "session.idle", sessionID: "a" }),
+    ])
+
+    expect(commands.get("a")).toEqual({ ts: 3, category: "git-push", summary: "second" })
+    expect(commands.get("b")?.category).toBe("git-commit")
   })
 })
 
@@ -196,6 +219,32 @@ describe("readMonitorState", () => {
       const joined = joinClaimsToSessions(state.registry, state.sessions)
       expect(joined.length).toBe(1)
       expect(joined[0]?.session?.sessionID).toBe("ses_1")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("exposes recent commands for per-session tool age", () => {
+    const root = tempDir()
+    try {
+      const hubDir = hubRoot(root, "proj")
+      const base = Date.parse("2026-09-27T11:00:00Z")
+      const log = new EventLog(hubDir, "srv1")
+      log.append(record({ ts: base, kind: "session.created", sessionID: "ses_1" }))
+      log.append(
+        record({
+          ts: base + 1,
+          kind: "command",
+          sessionID: "ses_1",
+          summary: "bun test",
+          refs: { category: "test" },
+        }),
+      )
+      log.append(record({ ts: base + 2, kind: "session.idle", sessionID: "ses_1" }))
+
+      const state = readMonitorState(hubDir, root, { now: Date.parse("2026-09-27T12:00:00Z") })
+      expect(state.recentCommands.length).toBe(1)
+      expect(lastCommandBySession(state.recentCommands).get("ses_1")?.summary).toBe("bun test")
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

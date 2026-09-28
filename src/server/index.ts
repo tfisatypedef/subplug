@@ -36,6 +36,7 @@ type SessionInfo = {
   directory?: string
   parentID?: string
   title?: string
+  cost?: number
   time?: { created?: number; updated?: number }
 }
 
@@ -138,10 +139,11 @@ function recordFor(
       const info = asRecord(properties.info)
       const sessionID = toStringValue(info.id)
       if (!sessionID) return undefined
-      const refs: Record<string, string | null> = {
+      const refs: Record<string, string | number | null> = {
         title: toStringValue(info.title) ?? null,
         directory: toStringValue(info.directory) ?? null,
         parentID: toStringValue(info.parentID) ?? null,
+        cost: typeof info.cost === "number" && Number.isFinite(info.cost) ? info.cost : null,
       }
       return {
         ts: now,
@@ -419,7 +421,8 @@ const server: Plugin = async (input, options) => {
 
       for (const session of candidates) {
         const node = sessions.get(session.id)
-        if (!node || (session.title && node.title !== session.title)) {
+        const costChanged = typeof session.cost === "number" && node?.cost !== session.cost
+        if (!node || (session.title && node.title !== session.title) || costChanged) {
           await append({
             ts: now(),
             serverID,
@@ -430,6 +433,7 @@ const server: Plugin = async (input, options) => {
               title: session.title ?? null,
               directory: session.directory ?? null,
               parentID: session.parentID ?? null,
+              cost: typeof session.cost === "number" && Number.isFinite(session.cost) ? session.cost : null,
             },
           })
         }

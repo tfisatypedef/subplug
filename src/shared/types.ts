@@ -114,5 +114,6 @@ export type MonitorState = {
   hubDir: string
   sessions: SessionNode[]
   risks: RiskRecord[]
+  recentCommands: EventRecord[]
   registry: RegistryState
 }

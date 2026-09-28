@@ -1,10 +1,30 @@
-import type { ClaimRecord, MonitorState, RegistryState, RiskRecord, SessionNode } from "../shared/types.ts"
+import type { ClaimRecord, EventRecord, MonitorState, RegistryState, RiskRecord, SessionNode } from "../shared/types.ts"
 import { buildRegistryState } from "../coord/claims.ts"
 import { readEventRecords } from "./append.ts"
 import { foldSessions } from "./fold.ts"
 
 export const DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000
 export const MAX_RISKS = 20
+export const MAX_COMMANDS = 20
+
+export type LastCommand = {
+  ts: number
+  category: string
+  summary: string
+}
+
+export function lastCommandBySession(records: readonly EventRecord[]): Map<string, LastCommand> {
+  const result = new Map<string, LastCommand>()
+  for (const record of records) {
+    if (record.kind !== "command" || !record.sessionID) continue
+    result.set(record.sessionID, {
+      ts: record.ts,
+      category: typeof record.refs?.category === "string" ? record.refs.category : "command",
+      summary: record.summary ?? "",
+    })
+  }
+  return result
+}
 
 export function emptyRegistry(): RegistryState {
   return { claims: [], verifications: [], conflicts: [], errors: [] }
@@ -38,6 +58,7 @@ export function readMonitorState(
     hubDir,
     sessions: foldSessions(records),
     risks: toRisks(records),
+    recentCommands: records.filter((record) => record.kind === "command").slice(-MAX_COMMANDS),
     registry,
   }
 }

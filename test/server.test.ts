@@ -70,6 +70,7 @@ type FakeSession = {
   directory?: string
   parentID?: string
   title?: string
+  cost?: number
   time?: { created?: number; updated?: number }
 }
 
@@ -324,6 +325,48 @@ describe("server plugin baseline import", () => {
     expect(serverStarted).toBe(true)
     await new Promise((resolve) => setTimeout(resolve, 200))
     expect(hubEvents(stateDir).some((event) => event.sessionID === "ses_stale00000001")).toBe(false)
+  })
+})
+
+describe("server plugin session cost", () => {
+  test("records cost from live session.updated events", async () => {
+    const repo = seedRepo([])
+    const stateDir = tempDir("state-")
+    const hooks = await startPlugin(repo, stateDir)
+    const onEvent = hooks.event as unknown as (input: { event: unknown }) => Promise<void>
+
+    await onEvent({
+      event: {
+        type: "session.updated",
+        properties: { info: { id: "ses_costlive000001", title: "cost live", directory: repo, cost: 2.5 } },
+      },
+    })
+
+    const event = hubEvents(stateDir).find((record) => record.sessionID === "ses_costlive000001")
+    expect(event?.refs?.cost).toBe(2.5)
+  })
+
+  test("carries cost from the baseline listing", async () => {
+    const repo = seedRepo([])
+    const stateDir = tempDir("state-")
+    const now = Date.now()
+    await startPlugin(repo, stateDir, {
+      sessions: [
+        {
+          id: "ses_costbase000001",
+          projectID: PROJECT_ID,
+          directory: repo,
+          title: "cost baseline",
+          cost: 1.25,
+          time: { created: now - 60_000, updated: now - 30_000 },
+        },
+      ],
+    })
+
+    const ready = await waitFor(() => hubEvents(stateDir).some((record) => record.sessionID === "ses_costbase000001"))
+    expect(ready).toBe(true)
+    const event = hubEvents(stateDir).find((record) => record.sessionID === "ses_costbase000001")
+    expect(event?.refs?.cost).toBe(1.25)
   })
 })
 

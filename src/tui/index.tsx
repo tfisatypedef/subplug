@@ -63,6 +63,7 @@ function emptyState(): MonitorState {
     hubDir: "",
     sessions: [],
     risks: [],
+    recentCommands: [],
     registry: { claims: [], verifications: [], conflicts: [], errors: [] },
   }
 }
