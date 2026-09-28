@@ -13,6 +13,15 @@ the TUI composer/inbox, a timeout-guarded state-dir fallback, and a shared-hub
 TUI checks (see "Implementation status"), the optional web view, and final
 packaging (publish decision).
 
+Follow-up context: the dashboard and detail offer `f`/`m` plus a clickable
+**[f] Follow up** action. TUI and tool sends share delivery logic: check live
+status, confirm queueing for busy/retrying agents, and resume idle agents via
+the native async prompt endpoint without waiting for their response. Both
+write redacted metadata pointers to the hub; full context stays in the native
+session. Startup discovers descendants recursively (50 recent starting
+sessions, 200 sessions total), and native `task` metadata updates recover live
+child links, agent names, and models even if creation events were missed.
+
 ## Locked decisions
 
 - **API**: v1 server hooks + v1 TUI plugin, pinned to `@opencode-ai/plugin` /

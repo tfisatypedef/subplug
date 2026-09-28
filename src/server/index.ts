@@ -9,7 +9,8 @@ import { applyRecord } from "../hub/fold.ts"
 import { agentIdentity } from "../hub/identity.ts"
 import { readMonitorState } from "../hub/monitor.ts"
 import { buildSessionTree, flattenTree, rollupSubtree } from "../hub/tree.ts"
-import { applyCommsRecord, buildInboxBlock, inboxFor, messageSummary, resolveTargets } from "../hub/comms.ts"
+import { applyCommsRecord, buildInboxBlock, inboxFor, resolveTargets } from "../hub/comms.ts"
+import { FollowUpConfirmationRequired, followUpError, sendFollowUp, type FollowUpTransport } from "../shared/follow-up.ts"
 import { fallbackStateDir, hubRoot, snapshotFile } from "../hub/paths.ts"
 import { findRepoRoot, isCoordinationEnabled } from "../coord/repo.ts"
 import { buildRegistryState, coverageErrors, readAdoptionPaths } from "../coord/claims.ts"
@@ -40,6 +41,8 @@ type SessionInfo = {
   directory?: string
   parentID?: string
   title?: string
+  agent?: string
+  model?: { id?: string; modelID?: string }
   cost?: number
   time?: { created?: number; updated?: number }
 }
@@ -59,6 +62,8 @@ type SessionDetail = {
 }
 
 const BASELINE_LIMIT = 50
+const BASELINE_TREE_LIMIT = 200
+const BASELINE_REQUEST_TIMEOUT_MS = 1500
 const MESSAGE_LIMIT = 50
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -179,6 +184,8 @@ function recordFor(
         directory: toStringValue(info.directory) ?? null,
         parentID: toStringValue(info.parentID) ?? null,
         cost: typeof info.cost === "number" && Number.isFinite(info.cost) ? info.cost : null,
+        agent: toStringValue(info.agent) ?? null,
+        model: toStringValue(asRecord(info.model).modelID) ?? toStringValue(asRecord(info.model).id) ?? null,
       }
       return {
         ts: now,
@@ -252,6 +259,29 @@ function recordFor(
         return { ts: now, serverID, sessionID, kind: "session.model", refs: { model: modelID } }
       }
       return undefined
+    }
+    case "message.part.updated": {
+      const part = asRecord(properties.part)
+      if (part.type !== "tool" || part.tool !== "task") return undefined
+      const state = asRecord(part.state)
+      const metadata = asRecord(state.metadata)
+      const args = asRecord(state.input)
+      const sessionID = toStringValue(metadata.sessionId)
+      const parentID = toStringValue(metadata.parentSessionId) ?? toStringValue(part.sessionID)
+      if (!sessionID || !parentID || sessionID === parentID) return undefined
+      return {
+        ts: now,
+        serverID,
+        sessionID,
+        parentID,
+        kind: "session.updated",
+        refs: {
+          parentID,
+          title: toStringValue(state.title) ?? toStringValue(args.description) ?? null,
+          agent: toStringValue(args.subagent_type) ?? null,
+          model: toStringValue(asRecord(metadata.model).modelID) ?? null,
+        },
+      }
     }
     case "command.executed": {
       const sessionID = toStringValue(properties.sessionID)
@@ -435,14 +465,22 @@ const server: Plugin = async (input, options) => {
   const sessionClient = input.client as unknown as {
     session: {
       list: () => Promise<unknown>
+      children: (input: { path: { id: string } }) => Promise<unknown>
       status: () => Promise<unknown>
       todo: (input: { path: { id: string } }) => Promise<unknown>
       messages: (input: { path: { id: string }; query?: { limit?: number } }) => Promise<unknown>
-      prompt: (input: {
-        path: { id: string }
-        body: { parts: Array<{ type: "text"; text: string }>; noReply?: boolean; messageID?: string }
-      }) => Promise<unknown>
     }
+  }
+
+  const followUpTransport: FollowUpTransport = {
+    get: (id, directory) => input.client.session.get({ path: { id }, query: { directory }, throwOnError: true }),
+    status: (directory) => input.client.session.status({ query: { directory }, throwOnError: true }),
+    prompt: ({ sessionID, directory, ...body }) => input.client.session.prompt({
+      path: { id: sessionID }, query: { directory }, body, throwOnError: true,
+    }),
+    promptAsync: ({ sessionID, directory, ...body }) => input.client.session.promptAsync({
+      path: { id: sessionID }, query: { directory }, body, throwOnError: true,
+    }),
   }
 
   const SEND_CAP = 5
@@ -505,8 +543,12 @@ const server: Plugin = async (input, options) => {
       const listing = unwrap<SessionInfo[]>(await sessionClient.session.list())
       if (!Array.isArray(listing)) return
       let statuses: Record<string, SessionStatusInfo> = {}
+      let statusesAvailable = false
       try {
-        statuses = unwrap<Record<string, SessionStatusInfo>>(await sessionClient.session.status()) ?? {}
+        const response = await sessionClient.session.status()
+        if (asRecord(response).error) throw new Error("status unavailable")
+        statuses = unwrap<Record<string, SessionStatusInfo>>(response) ?? {}
+        statusesAvailable = true
       } catch {
         statuses = {}
       }
@@ -518,10 +560,20 @@ const server: Plugin = async (input, options) => {
         .sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0))
         .slice(0, BASELINE_LIMIT)
 
-      for (const session of candidates) {
+      // Session lists can omit children, and the plugin may start after their
+      // creation events. Walk native children recursively to recover the tree.
+      const visited = new Set<string>()
+      for (let index = 0; index < candidates.length && visited.size < BASELINE_TREE_LIMIT; index += 1) {
+        const session = candidates[index]!
+        if (visited.has(session.id)) continue
+        visited.add(session.id)
         const node = sessions.get(session.id)
+        const modelID = session.model?.modelID ?? session.model?.id
         const costChanged = typeof session.cost === "number" && node?.cost !== session.cost
-        if (!node || (session.title && node.title !== session.title) || costChanged) {
+        if (
+          !node || (session.title && node.title !== session.title) || node.parentID !== session.parentID || costChanged ||
+          (session.agent && node.agent !== session.agent) || (modelID && node.model !== modelID)
+        ) {
           await append({
             ts: now(),
             serverID,
@@ -533,10 +585,12 @@ const server: Plugin = async (input, options) => {
               directory: session.directory ?? null,
               parentID: session.parentID ?? null,
               cost: typeof session.cost === "number" && Number.isFinite(session.cost) ? session.cost : null,
+              agent: session.agent ?? null,
+              model: modelID ?? null,
             },
           })
         }
-        const status = statuses[session.id]?.type
+        const status = statuses[session.id]?.type ?? (statusesAvailable ? "idle" : undefined)
         const current = sessions.get(session.id)
         if (
           status &&
@@ -545,6 +599,21 @@ const server: Plugin = async (input, options) => {
           current.status !== status
         ) {
           await append({ ts: now(), serverID, sessionID: session.id, kind: "session.status", refs: { status } })
+        }
+        try {
+          const children = unwrap<SessionInfo[]>(await withTimeout(
+            sessionClient.session.children({ path: { id: session.id } }), BASELINE_REQUEST_TIMEOUT_MS,
+          ))
+          for (const child of Array.isArray(children) ? children : []) {
+            if (!child.id || visited.has(child.id)) continue
+            if (child.projectID && input.project?.id && child.projectID !== input.project.id) continue
+            if (child.time?.updated && child.time.updated < cutoff && !statuses[child.id]) continue
+            if (candidates.some((item) => item.id === child.id)) continue
+            if (candidates.length >= BASELINE_TREE_LIMIT) break
+            candidates.push({ ...child, id: child.id, parentID: child.parentID ?? session.id })
+          }
+        } catch {
+          // A missing/deleted branch must not hide the remaining sessions.
         }
       }
     } catch {
@@ -849,7 +918,7 @@ const server: Plugin = async (input, options) => {
 
       swarm_send: tool({
         description:
-          "Send a message to another opencode session or subagent in this project (addressed only, no broadcast). The message is written as a durable user message in the target session; idle targets start a turn, busy targets are queued for the next step boundary. Records a metadata-only pointer in the hub. Pass `confirm: true` to send to a busy target.",
+          "Send follow-up context to another opencode agent or subagent in this project (addressed only, no broadcast). The full text stays in the target's native session: idle agents resume without waiting for their response; running agents receive it at their next step. Records a metadata-only inbox pointer. Pass `confirm: true` to queue for a running target.",
         args: {
           session: tool.schema.string().optional(),
           task_id: tool.schema.string().optional(),
@@ -883,13 +952,6 @@ const server: Plugin = async (input, options) => {
           if (target.sessionID === context.sessionID) {
             return { title: "subplug swarm_send", output: "refusing to send a message to the calling session" }
           }
-          if (target.status === "busy" && !args.confirm) {
-            return {
-              title: "subplug swarm_send",
-              output: `session ${target.sessionID.slice(0, 12)} is busy; pass confirm:true to queue anyway (consumed at the next step boundary, may interleave)`,
-              metadata: { target: target.sessionID, busy: true },
-            }
-          }
           const sender = context.sessionID
           const recent = (sendTimes.get(sender) ?? []).filter((ts) => now() - ts < SEND_CAP_WINDOW_MS)
           if (recent.length >= SEND_CAP) {
@@ -898,31 +960,33 @@ const server: Plugin = async (input, options) => {
               output: `send cap reached (${SEND_CAP}/minute); wait before sending again`,
             }
           }
-          const msgID = `msg_${Math.random().toString(16).slice(2, 10)}${now().toString(16)}`
-          const noReply = target.status !== "idle"
+          let sent: Awaited<ReturnType<typeof sendFollowUp>>
           try {
-            await sessionClient.session.prompt({
-              path: { id: target.sessionID },
-              body: { messageID: msgID, noReply, parts: [{ type: "text", text }] },
+            sent = await sendFollowUp({
+              target,
+              message: text,
+              from: sessions.get(sender)?.identity ?? sender,
+              serverID,
+              confirm: args.confirm,
+              transport: followUpTransport,
+              record: append,
             })
           } catch (error) {
-            return { title: "subplug swarm_send", output: `send failed: ${summarizeError(error)}` }
+            if (error instanceof FollowUpConfirmationRequired) {
+              return {
+                title: "subplug swarm_send",
+                output: `session ${target.sessionID.slice(0, 12)} is ${error.status}; pass confirm:true to queue follow-up context for its next step`,
+                metadata: { target: target.sessionID, busy: true },
+              }
+            }
+            return { title: "subplug swarm_send", output: `send failed: ${followUpError(error)}` }
           }
           recent.push(now())
           sendTimes.set(sender, recent)
-          const from = sessions.get(sender)?.identity ?? sender
-          await append({
-            ts: now(),
-            serverID,
-            sessionID: target.sessionID,
-            kind: "comms.sent",
-            summary: messageSummary(text),
-            refs: { msgID, to: target.sessionID, from, kind: "message", delivery: noReply ? "queue" : "prompt" },
-          })
           return {
             title: "subplug swarm_send",
-            output: `sent ${msgID} to ${target.sessionID.slice(0, 12)} (${target.status}, ${noReply ? "queued" : "prompted"})`,
-            metadata: { target: target.sessionID, msgID, noReply },
+            output: `sent ${sent.msgID} to ${target.sessionID.slice(0, 12)} (${sent.status}, ${sent.noReply ? "queued" : "prompted"})`,
+            metadata: { target: target.sessionID, msgID: sent.msgID, noReply: sent.noReply },
           }
         },
       }),

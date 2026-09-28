@@ -99,6 +99,7 @@ async function startPlugin(
     stateFromClient?: boolean
     hubGroup?: string
     sessions?: FakeSession[]
+    children?: Record<string, FakeSession[]>
     statuses?: Record<string, { type: string }>
     messages?: FakeMessages
     todos?: FakeTodos
@@ -120,13 +121,19 @@ async function startPlugin(
         },
       },
       session: {
+        get: async (request: { path: { id: string } }) => ({ data: options.sessions?.find((session) => session.id === request.path.id) ?? { id: request.path.id } }),
         list: async () => ({ data: options.sessions ?? [] }),
+        children: async (request: { path: { id: string } }) => ({ data: options.children?.[request.path.id] ?? [] }),
         status: async () => ({ data: options.statuses ?? {} }),
         todo: async (request: { path: { id: string } }) => ({ data: options.todos?.[request.path.id] ?? [] }),
         messages: async (request: { path: { id: string } }) => ({ data: options.messages?.[request.path.id] ?? [] }),
         prompt: async (request: FakePrompt) => {
           options.prompts?.push(request)
           return { data: { info: { id: request.body.messageID ?? "msg_test" }, parts: [] } }
+        },
+        promptAsync: async (request: FakePrompt) => {
+          options.prompts?.push(request)
+          return { data: undefined }
         },
       },
     },
@@ -327,6 +334,47 @@ describe("server plugin identity", () => {
 })
 
 describe("server plugin baseline import", () => {
+  test("recovers nested subagents absent from the session list", async () => {
+    const repo = seedRepo([])
+    const stateDir = tempDir("state-")
+    const root = { id: "ses_recoveredroot", projectID: PROJECT_ID, directory: repo, time: { updated: Date.now() } }
+    const child = { ...root, id: "ses_recoveredchild", parentID: root.id, title: "child" }
+    const grandchild = { ...root, id: "ses_recoveredgrandchild", parentID: child.id, title: "grandchild" }
+    const hooks = await startPlugin(repo, stateDir, {
+      sessions: [root],
+      children: { [root.id]: [child], [child.id]: [grandchild], [grandchild.id]: [root] },
+      statuses: { [grandchild.id]: { type: "busy" } },
+    })
+    expect(await waitFor(() => hubEvents(stateDir).some((event) => event.sessionID === grandchild.id && event.kind === "session.status"))).toBe(true)
+    const status = (hooks.tool as unknown as Record<string, { execute: (args: Record<string, unknown>, ctx: Record<string, unknown>) => Promise<{ output: string }> }>)["swarm_status"]!
+    const result = await status.execute({ format: "json" }, { sessionID: root.id, directory: repo })
+    const sessions = JSON.parse(result.output).sessions as Array<{ sessionID: string; parentID?: string; kind: string; status: string }>
+    expect(sessions.find((session) => session.sessionID === child.id)).toMatchObject({ parentID: root.id, kind: "subagent", status: "idle" })
+    expect(sessions.find((session) => session.sessionID === grandchild.id)).toMatchObject({ parentID: child.id, kind: "subagent", status: "busy" })
+    expect(sessions.filter((session) => session.sessionID === root.id)).toHaveLength(1)
+  })
+
+  test("recognizes a live task child from native tool metadata", async () => {
+    const repo = seedRepo([])
+    const stateDir = tempDir("state-")
+    const hooks = await startPlugin(repo, stateDir)
+    await hooks.event?.({ event: {
+      type: "message.part.updated",
+      properties: { part: {
+        id: "prt_task", messageID: "msg_task", sessionID: "ses_taskparent", type: "tool", tool: "task", callID: "call_task",
+        state: { status: "running", title: "Review changes", time: { start: Date.now() },
+          input: { description: "Review changes", subagent_type: "explore", prompt: "PRIVATE_TASK_BODY" },
+          metadata: { sessionId: "ses_taskchild", parentSessionId: "ses_taskparent", model: { modelID: "test-model" } },
+        },
+      } },
+    } })
+    const events = hubEvents(stateDir)
+    expect(events.find((event) => event.sessionID === "ses_taskchild")).toMatchObject({
+      parentID: "ses_taskparent", refs: { agent: "explore", model: "test-model", title: "Review changes" },
+    })
+    expect(JSON.stringify(events)).not.toContain("PRIVATE_TASK_BODY")
+  })
+
   test("imports existing sessions and statuses at bootstrap", async () => {
     const repo = seedRepo([])
     const stateDir = tempDir("state-")

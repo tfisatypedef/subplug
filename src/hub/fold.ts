@@ -37,6 +37,9 @@ export function applyRecord(nodes: Map<string, SessionNode>, record: EventRecord
       if (typeof refs.directory === "string" && refs.directory) node.directory = refs.directory
       if (record.parentID) node.parentID = record.parentID
       if (typeof refs.parentID === "string" && refs.parentID) node.parentID = refs.parentID
+      node.kind = node.parentID ? "subagent" : "root"
+      if (typeof refs.agent === "string" && refs.agent) node.agent = refs.agent
+      if (typeof refs.model === "string" && refs.model) node.model = refs.model
       if (typeof refs.cost === "number" && Number.isFinite(refs.cost)) node.cost = refs.cost
       if (record.kind === "session.created" && node.status === "unknown") node.status = "idle"
       if (record.kind === "session.deleted") node.deleted = true

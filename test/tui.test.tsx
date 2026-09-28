@@ -1,13 +1,24 @@
 /** @jsxImportSource @opentui/solid */
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { testRender, type JSX } from "@opentui/solid"
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
-import { Dashboard, SessionDetail, Sidebar, transcriptLine, type Skin } from "../src/tui/index.tsx"
+import { registerEnabledFields } from "@opentui/keymap/addons"
+import { createTestKeymap } from "@opentui/keymap/testing"
+import type { TuiDialogConfirmProps, TuiDialogPromptProps, TuiPluginApi } from "@opencode-ai/plugin/tui"
+import { createFollowUpComposer, Dashboard, SessionDetail, Sidebar, transcriptLine, type Skin } from "../src/tui/index.tsx"
+import { readEventRecords } from "../src/hub/append.ts"
+import type { FollowUpRequest } from "../src/shared/follow-up.ts"
 import type { MonitorState, SessionNode } from "../src/shared/types.ts"
 import type { TranscriptRow } from "../src/shared/transcript.ts"
 
 const WIDTH = 100
 const HEIGHT = 30
+const followUpDirs: string[] = []
+afterEach(() => {
+  for (const dir of followUpDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
 
 function session(overrides: Partial<SessionNode> & { sessionID: string }): SessionNode {
   return { kind: "root", status: "idle", lastEventAt: 1000, ...overrides }
@@ -44,6 +55,7 @@ function stubApi(): TuiPluginApi {
     },
     kv: { get: () => [], set: () => undefined },
     keymap: { registerLayer: () => () => undefined },
+    ui: { dialog: { open: false } },
     state: {
       session: { get: () => undefined },
       part: () => [],
@@ -226,5 +238,149 @@ describe("subplug TUI layout", () => {
     await setup.renderOnce()
     expect(opened).toBe(1)
     setup.renderer.destroy()
+  })
+})
+
+describe("TUI dialog keyboard isolation", () => {
+  for (const view of ["dashboard", "detail"] as const) {
+    test(`${view}: Escape closes the composer before navigating back`, async () => {
+      const keys = createTestKeymap({ defaultKeys: true })
+      registerEnabledFields(keys.keymap)
+      let dialogOpen = false
+      let dialogsOpened = 0
+      let backs = 0
+      let navigations = 0
+      let prompt: TuiDialogPromptProps | undefined
+      const api = {
+        ...stubApi(),
+        keymap: keys.keymap,
+        ui: {
+          DialogPrompt: (props: TuiDialogPromptProps) => { prompt = props; return undefined },
+          dialog: {
+            get open() { return dialogOpen },
+            replace: (render: () => JSX.Element) => { dialogOpen = true; dialogsOpened += 1; render() },
+            clear: () => { dialogOpen = false },
+          },
+        },
+      } as unknown as TuiPluginApi
+      // Model the host's modal Escape handler below the plugin's priority.
+      keys.keymap.registerLayer({
+        priority: 10,
+        enabled: () => dialogOpen,
+        bindings: [{ key: "escape", cmd: () => prompt?.onCancel?.() }],
+      })
+      const compose = createFollowUpComposer(api, monitorState)
+      const setup = await renderHosted(() => view === "dashboard" ? (
+        <Dashboard
+          api={api} state={monitorState} route="subplug" command="subplug.open"
+          onClose={() => { backs += 1 }} openSession={() => { navigations += 1 }} compose={compose}
+        />
+      ) : (
+        <SessionDetail
+          api={api} state={monitorState} sessionID={() => "ses_root00000001"}
+          trail={() => ["ses_root00000001"]} descend={() => { navigations += 1 }}
+          back={() => { backs += 1 }} compose={compose} intervalMs={60_000}
+        />
+      ))
+      try {
+        keys.host.press("f")
+        expect(dialogOpen).toBe(true)
+        expect(dialogsOpened).toBe(1)
+
+        // Text and navigation keys must reach the dialog instead of the view.
+        for (const key of ["f", "m", "q", "return", "down"]) keys.host.press(key)
+        expect(dialogOpen).toBe(true)
+        expect(dialogsOpened).toBe(1)
+        expect(backs).toBe(0)
+        expect(navigations).toBe(0)
+
+        keys.host.press("escape")
+        expect(dialogOpen).toBe(false)
+        expect(backs).toBe(0)
+
+        keys.host.press("escape")
+        expect(backs).toBe(1)
+        expect(keys.diagnostics.errors).toHaveLength(0)
+      } finally {
+        setup.renderer.destroy()
+        keys.cleanup()
+      }
+    })
+  }
+})
+
+describe("TUI follow-up composer", () => {
+  function setup(status: "idle" | "busy", fail = false) {
+    const hubDir = mkdtempSync(join(tmpdir(), "subplug-tui-follow-up-"))
+    followUpDirs.push(hubDir)
+    const state = { ...monitorState(), hubDir }
+    let prompt: TuiDialogPromptProps | undefined
+    let confirm: TuiDialogConfirmProps | undefined
+    const calls: Array<{ method: string; request: FollowUpRequest }> = []
+    const toasts: Array<{ variant: string; message: string }> = []
+    const api = {
+      client: { session: {
+        get: async () => ({ data: { id: "ses_child0000001", agent: "explore" } }),
+        status: async () => ({ data: { ses_child0000001: { type: status } } }),
+        prompt: async (request: FollowUpRequest) => { calls.push({ method: "prompt", request }); return { data: {} } },
+        promptAsync: async (request: FollowUpRequest) => {
+          calls.push({ method: "promptAsync", request })
+          return fail ? { error: { name: "NotFoundError" } } : { data: undefined }
+        },
+      } },
+      ui: {
+        DialogPrompt: (props: TuiDialogPromptProps) => { prompt = props; return undefined },
+        DialogConfirm: (props: TuiDialogConfirmProps) => { confirm = props; return undefined },
+        dialog: { replace: (render: () => JSX.Element) => render(), clear: () => undefined },
+        toast: (toast: { variant: string; message: string }) => { toasts.push(toast) },
+      },
+    } as unknown as TuiPluginApi
+    const compose = createFollowUpComposer(api, () => state)
+    const waitFor = async (predicate: () => boolean) => {
+      const deadline = Date.now() + 2000
+      while (!predicate() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5))
+      expect(predicate()).toBe(true)
+    }
+    return { hubDir, compose, calls, toasts, prompt: () => prompt, confirm: () => confirm, waitFor }
+  }
+
+  test("targets a subagent, resumes it, and writes its inbox pointer", async () => {
+    const harness = setup("idle")
+    harness.compose("ses_child0000001", "idle")
+    expect(harness.prompt()?.title).toContain("child session")
+    harness.prompt()?.onConfirm?.("  Use the new test fixture  ")
+    await harness.waitFor(() => harness.toasts.length > 0)
+    expect(harness.calls[0]).toMatchObject({ method: "promptAsync", request: {
+      sessionID: "ses_child0000001", noReply: false, parts: [{ type: "text", text: "Use the new test fixture" }],
+    } })
+    expect(readEventRecords(harness.hubDir)[0]).toMatchObject({
+      kind: "comms.sent", refs: { from: "user", to: "ses_child0000001", kind: "follow-up", delivery: "prompt" },
+    })
+    expect(harness.toasts[0]?.variant).toBe("success")
+  })
+
+  test("preserves context while confirming a target that became busy", async () => {
+    const harness = setup("busy")
+    harness.compose("ses_child0000001", "idle")
+    harness.prompt()?.onConfirm?.("Follow-up while running")
+    await harness.waitFor(() => Boolean(harness.confirm()))
+    expect(harness.calls).toHaveLength(0)
+    expect(readEventRecords(harness.hubDir)).toHaveLength(0)
+    harness.confirm()?.onConfirm?.()
+    await harness.waitFor(() => harness.toasts.length > 0)
+    expect(harness.calls[0]).toMatchObject({ method: "prompt", request: {
+      sessionID: "ses_child0000001", noReply: true, parts: [{ type: "text", text: "Follow-up while running" }],
+    } })
+    expect(readEventRecords(harness.hubDir)[0]?.refs?.delivery).toBe("queue")
+  })
+
+  test("reports an SDK rejection without writing a sent pointer", async () => {
+    const harness = setup("idle", true)
+    harness.compose("ses_child0000001", "idle")
+    harness.prompt()?.onConfirm?.("Context")
+    await harness.waitFor(() => harness.toasts.length > 0)
+    expect(harness.toasts[0]?.variant).toBe("error")
+    expect(harness.toasts[0]?.message).toContain("NotFoundError")
+    expect(readEventRecords(harness.hubDir)).toHaveLength(0)
   })
 })

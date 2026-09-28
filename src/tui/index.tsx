@@ -1,6 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { randomUUID } from "node:crypto"
 import type { KeyEvent, RGBA, Renderable } from "@opentui/core"
 import { createBindingLookup, type BindingConfig } from "@opentui/keymap/extras"
 import { createEffect, createSignal, onCleanup } from "solid-js"
@@ -8,6 +9,8 @@ import type { TuiPlugin, TuiPluginApi, TuiPluginModule, TuiSlotPlugin } from "@o
 import type { ClaimRecord, MonitorState, SessionNode } from "../shared/types.ts"
 import { joinClaimsToSessions, lastCommandBySession, readMonitorState, type LastCommand } from "../hub/monitor.ts"
 import { inboxFor } from "../hub/comms.ts"
+import { EventLog } from "../hub/append.ts"
+import { FollowUpConfirmationRequired, followUpError, sendFollowUp } from "../shared/follow-up.ts"
 import { buildSessionTree, flattenTree, rollupSubtree, type SubtreeRollup, type TreeRow } from "../hub/tree.ts"
 import {
   buildTranscriptRows,
@@ -603,12 +606,13 @@ export function Dashboard(props: {
     "subplug.collapse": "left",
     "subplug.expand": ["right", "space"],
     "subplug.open.selected": "return",
-    "subplug.compose": "m",
+    "subplug.compose": ["f", "m"],
     "subplug.dashboard.back": ["escape", "q"],
   }
   const keys = createBindingLookup(routeKeys)
   const disposeKeys = props.api.keymap.registerLayer({
     priority: 100,
+    enabled: () => !props.api.ui.dialog.open,
     commands: [
       { name: "subplug.select.next", title: "Subplug: next session", category: "Plugin", run: () => move(1) },
       { name: "subplug.select.prev", title: "Subplug: previous session", category: "Plugin", run: () => move(-1) },
@@ -622,7 +626,7 @@ export function Dashboard(props: {
       },
       {
         name: "subplug.compose",
-        title: "Subplug: message session",
+        title: "Subplug: send follow-up context",
         category: "Plugin",
         run: () => {
           const row = rows()[current()]
@@ -683,9 +687,21 @@ export function Dashboard(props: {
           gap={1}
           flexGrow={1}
         >
-          <text flexShrink={0} fg={skin().accent}>
-            <b>Sessions ({snapshot().sessions.length})</b>
-          </text>
+          <box flexShrink={0} flexDirection="row" justifyContent="space-between">
+            <text flexShrink={0} fg={skin().accent}>
+              <b>Sessions ({snapshot().sessions.length})</b>
+            </text>
+            <text
+              flexShrink={0}
+              fg={skin().accent}
+              onMouseDown={() => {
+                const row = rows()[current()]
+                if (row) props.compose(row.session.sessionID, row.session.status)
+              }}
+            >
+              [f] Follow up
+            </text>
+          </box>
           {rows().length === 0 ? <text flexShrink={0} fg={skin().muted}>no sessions recorded yet</text> : null}
           {rows().map((row, index) => {
             const rollup = rollupLabel(rollupSubtree(sessions(), row.session.sessionID))
@@ -753,7 +769,7 @@ export function Dashboard(props: {
         </box>
 
         <text flexShrink={0} fg={skin().muted}>
-          ↑/↓ select · ←/→ collapse · enter open · m message · esc/q back · /{props.route} reopens · {props.command}{" "}
+          ↑/↓ select · ←/→ collapse · enter open · f/m follow-up · esc/q back · /{props.route} reopens · {props.command}{" "}
           from the palette
         </text>
       </box>
@@ -848,12 +864,13 @@ export function SessionDetail(props: {
     "subplug.detail.descend": "return",
     "subplug.detail.scroll.up": "pageup",
     "subplug.detail.scroll.down": "pagedown",
-    "subplug.detail.compose": "m",
+    "subplug.detail.compose": ["f", "m"],
     "subplug.back": ["escape", "q"],
   }
   const keys = createBindingLookup(detailKeys)
   const disposeKeys = props.api.keymap.registerLayer({
     priority: 100,
+    enabled: () => !props.api.ui.dialog.open,
     commands: [
       { name: "subplug.detail.next", title: "Subplug: next subagent", category: "Plugin", run: () => moveChild(1) },
       { name: "subplug.detail.prev", title: "Subplug: previous subagent", category: "Plugin", run: () => moveChild(-1) },
@@ -872,7 +889,7 @@ export function SessionDetail(props: {
       },
       {
         name: "subplug.detail.compose",
-        title: "Subplug: message session",
+        title: "Subplug: send follow-up context",
         category: "Plugin",
         run: () => props.compose(props.sessionID(), session()?.status ?? "unknown"),
       },
@@ -930,9 +947,18 @@ export function SessionDetail(props: {
           <text flexShrink={0} fg={skin().muted}>esc/q back</text>
         </box>
         <text flexShrink={0} fg={skin().muted}>{breadcrumb()}</text>
-        <text flexShrink={0} fg={skin().text}>
-          {session() ? `${statusMark(session()!.status)} ${sessionLabel(session()!)}` : props.sessionID()}
-        </text>
+        <box flexShrink={0} flexDirection="row" justifyContent="space-between">
+          <text flexShrink={0} fg={skin().text}>
+            {session() ? `${statusMark(session()!.status)} ${sessionLabel(session()!)}` : props.sessionID()}
+          </text>
+          <text
+            flexShrink={0}
+            fg={skin().accent}
+            onMouseDown={() => props.compose(props.sessionID(), session()?.status ?? "unknown")}
+          >
+            [f] Follow up
+          </text>
+        </box>
         <text flexShrink={0} fg={skin().muted}>
           {shortID(props.sessionID())} · {session()?.status ?? "unknown"}
           {session()?.agent ? ` · agent=${session()!.agent}` : ""}
@@ -1066,7 +1092,7 @@ export function SessionDetail(props: {
               <b>Conversation ({detail().rows.length} rows)</b>
             </text>
             <text flexShrink={0} fg={skin().muted}>
-              ↑/↓ subagent · pgup/pgdn scroll{scroll() ? ` (${scroll()})` : ""}
+              ↑/↓ subagent · f/m follow-up · pgup/pgdn scroll{scroll() ? ` (${scroll()})` : ""}
             </text>
           </box>
           {detail().rows.length === 0 ? <text flexShrink={0} fg={skin().muted}>no transcript loaded</text> : null}
@@ -1075,6 +1101,92 @@ export function SessionDetail(props: {
       </box>
     </box>
   )
+}
+
+export function createFollowUpComposer(api: TuiPluginApi, state: () => MonitorState) {
+  const { DialogConfirm, DialogPrompt } = api.ui
+  const serverID = `subplug-tui-${randomUUID()}`
+  let eventLog: EventLog | undefined
+  const promptTarget = async (sessionID: string, text: string, confirm = false): Promise<void> => {
+    try {
+      const target = state().sessions.find((session) => session.sessionID === sessionID)
+      if (!target) throw new Error("target session is no longer available")
+      if (!state().hubDir) throw new Error("monitor is still loading; try again shortly")
+      const sent = await sendFollowUp({
+        target,
+        message: text,
+        from: "user",
+        serverID,
+        confirm,
+        transport: {
+          get: (sessionID, directory) => api.client.session.get({ sessionID, directory }, { throwOnError: true }),
+          status: (directory) => api.client.session.status({ directory }, { throwOnError: true }),
+          prompt: (request) => api.client.session.prompt(request, { throwOnError: true }),
+          promptAsync: (request) => api.client.session.promptAsync(request, { throwOnError: true }),
+        },
+        record: (record) => {
+          eventLog ??= new EventLog(state().hubDir, serverID)
+          eventLog.append(record)
+        },
+      })
+      api.ui.toast({
+        variant: "success",
+        title: "subplug",
+        message: `${sent.noReply ? "follow-up queued" : "follow-up sent; agent resuming"} to ${shortID(sessionID)}`,
+        duration: 3000,
+      })
+    } catch (error) {
+      if (error instanceof FollowUpConfirmationRequired) {
+        api.ui.dialog.replace(
+          () => (
+            <DialogConfirm
+              title={`agent is ${error.status}`}
+              message="Send this follow-up context at the agent's next step? It may affect work already in progress."
+              onConfirm={() => {
+                api.ui.dialog.clear()
+                void promptTarget(sessionID, text, true)
+              }}
+              onCancel={() => api.ui.dialog.clear()}
+            />
+          ),
+          () => undefined,
+        )
+        return
+      }
+      api.ui.toast({
+        variant: "error",
+        title: "subplug",
+        message: `follow-up failed: ${followUpError(error)}`,
+        duration: 5000,
+      })
+    }
+  }
+  return (sessionID: string, status: SessionNode["status"]): void => {
+    if (!sessionID) return
+    const target = state().sessions.find((session) => session.sessionID === sessionID)
+    api.ui.dialog.replace(
+      () => (
+        <DialogPrompt
+          title={`Follow-up: ${target ? sessionLabel(target) : shortID(sessionID)}`}
+          placeholder="Additional context or instructions"
+          description={() => (
+            <text>
+              {status === "idle"
+                ? "Sending resumes this agent with your follow-up context."
+                : "Running agents receive context at their next step; you will confirm before sending."}
+            </text>
+          )}
+          onConfirm={(value: string) => {
+            api.ui.dialog.clear()
+            const text = value.trim()
+            if (text) void promptTarget(sessionID, text)
+          }}
+          onCancel={() => api.ui.dialog.clear()}
+        />
+      ),
+      () => undefined,
+    )
+  }
 }
 
 const tui: TuiPlugin = async (api, options) => {
@@ -1127,72 +1239,7 @@ const tui: TuiPlugin = async (api, options) => {
     closeDashboard()
   }
 
-  const { DialogConfirm, DialogPrompt } = api.ui
-  const promptTarget = async (sessionID: string, text: string, noReply: boolean): Promise<void> => {
-    try {
-      const client = api.client as unknown as {
-        session: {
-          prompt: (input: {
-            sessionID: string
-            noReply?: boolean
-            parts: Array<{ type: "text"; text: string }>
-          }) => Promise<unknown>
-        }
-      }
-      await client.session.prompt({ sessionID, noReply, parts: [{ type: "text", text }] })
-      api.ui.toast({
-        variant: "success",
-        title: "subplug",
-        message: `${noReply ? "queued" : "sent"} to ${shortID(sessionID)}`,
-        duration: 3000,
-      })
-    } catch (error) {
-      api.ui.toast({
-        variant: "error",
-        title: "subplug",
-        message: `send failed: ${String(error).slice(0, 80)}`,
-        duration: 5000,
-      })
-    }
-  }
-  const openComposer = (sessionID: string, noReply: boolean): void => {
-    api.ui.dialog.replace(
-      () => (
-        <DialogPrompt
-          title={`message ${shortID(sessionID)}${noReply ? " (queued)" : ""}`}
-          placeholder="message"
-          onConfirm={(value: string) => {
-            api.ui.dialog.clear()
-            const text = value.trim()
-            if (text) void promptTarget(sessionID, text, noReply)
-          }}
-          onCancel={() => api.ui.dialog.clear()}
-        />
-      ),
-      () => undefined,
-    )
-  }
-  const compose = (sessionID: string, status: SessionNode["status"]): void => {
-    if (!sessionID) return
-    if (status === "idle") {
-      openComposer(sessionID, false)
-      return
-    }
-    api.ui.dialog.replace(
-      () => (
-        <DialogConfirm
-          title={`target is ${status}`}
-          message="Queue this message for the next step boundary? It can interleave with in-flight work."
-          onConfirm={() => {
-            api.ui.dialog.clear()
-            openComposer(sessionID, true)
-          }}
-          onCancel={() => api.ui.dialog.clear()}
-        />
-      ),
-      () => undefined,
-    )
-  }
+  const compose = createFollowUpComposer(api, state)
 
   try {
     const markerDir = join(cfg.storageDir ?? api.state.path.state, "subplug")

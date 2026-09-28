@@ -105,6 +105,10 @@ by `msgID`).
 
 At startup the server imports the project's existing sessions (metadata only,
 bounded by `maxAgeMs`) so restored sessions appear before they emit new events.
+It starts with the 50 most recent sessions and walks their native children,
+up to 200 sessions total, including nested subagents omitted from the initial
+list. Native `task` tool updates also recover parent/child links, agent type,
+and model while work is running; task prompt bodies stay out of the hub.
 
 When identity injection is on, a `git commit`/`git push`/`coord` command whose
 staged paths are not covered by the session's claims is recorded as a
@@ -128,12 +132,16 @@ message excerpts. Pass `inbox: true` to pull queued pointers addressed to the
 calling session (marks them seen). Message excerpts are read live and are never
 written to the hub.
 
-A companion `swarm_send` tool queues an addressed message to another session or
-subagent (`session` or `task_id`): idle targets start a turn, busy targets
+A companion `swarm_send` tool sends follow-up context to another agent or
+subagent (`session` or `task_id`): idle targets resume a turn, running targets
 require `confirm: true` and are consumed at the next step boundary. The message
-is a durable user message in the target session; the hub gets a metadata-only
+stays in the target's native session; the hub gets a metadata-only
 pointer. When a recipient starts its next turn, pending pointers are appended as
 one synthetic part framed as untrusted data (`comms.inject`, default on).
+Idle sends use `session.promptAsync` so sending returns without waiting for
+the recipient's response. Both the tool and TUI check current runtime status
+before sending and record a redacted inbox pointer only after the API accepts
+the request.
 
 ## TUI
 
@@ -156,9 +164,10 @@ one synthetic part framed as untrusted data (`comms.inject`, default on).
   from the max assistant input plus summed cost. Transcripts are read from the
   TUI session store when present, falling back to the live SDK, and are never
   written to the hub.
-- `m` composes a message to the selected session (dashboard) or the current
-  session (detail). Busy targets ask for confirmation first; the send is a
-  queue-only v1 `session.prompt`.
+- `f` (or `m`) and the clickable **[f] Follow up** action compose context for
+  the selected agent/subagent (dashboard) or the viewed session (detail).
+  Running targets ask for confirmation after you enter the context; idle
+  targets resume. TUI sends appear in the same inbox metadata as tool sends.
 - Toasts plus attention sounds on `session.error`, subagent completion, and
   uncovered-commit risk.
 
@@ -168,13 +177,22 @@ The sidebar **Agents** block is display-only apart from click-to-open: clicking
 it (or pressing `ctrl+alt+a`, or typing `/subplug`) opens the dashboard.
 
 - Dashboard: `↑`/`↓` select a session, `←`/`→` collapse/expand, `Enter` opens the
-  session detail, `m` messages the selected session, `Esc`/`q` closes.
+  session detail, `f`/`m` sends follow-up context, `Esc`/`q` closes.
 - Session detail: `↑`/`↓` select a subagent, `Enter` descends into it,
-  `pgup`/`pgdn` scroll the conversation, `m` messages that session, `Esc`/`q`
+  `pgup`/`pgdn` scroll the conversation, `f`/`m` follows up with the viewed session, `Esc`/`q`
   goes back.
-- `m` sends immediately to an idle target; busy targets ask for confirmation and
+- Follow-ups resume an idle target; running targets ask for confirmation and
   are queued for their next step boundary. Agents can also call `swarm_send`
   directly.
+
+While the composer or confirmation is open, `Esc` cancels that dialog and
+keeps the agent view open. Press `Esc` again to go back from the view.
+
+For example, open `/subplug`, select a parent agent or descend into one of its
+subagents, then press `f` and enter: “Use the updated fixture; keep the public
+API unchanged.” The target receives that text in its own conversation.
+You can also ask your current agent: “Find the test subagent with `swarm_status`
+and send it this follow-up with `swarm_send`.”
 
 ## Development
 
@@ -243,4 +261,3 @@ Expected: the root session keeps `Harness Agent@<host>`; the child shows
 `parent=<root id>`, `kind=subagent`, and identity
 `Harness Agent@<host>/<childID[0:8]>`; claims list `⇄ <session>` when the
 session identity matches a claim's agent.
-
