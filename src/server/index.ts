@@ -4,7 +4,7 @@ import { tool } from "@opencode-ai/plugin"
 import type { Hooks, Plugin, PluginInput } from "@opencode-ai/plugin"
 import { categorizeCommand, summarizeCommand, summarizeError } from "../shared/redact.ts"
 import type { EventRecord, SessionNode } from "../shared/types.ts"
-import { EventLog, readEventRecords } from "../hub/append.ts"
+import { EventLog, EventTail, readEventRecords } from "../hub/append.ts"
 import { applyRecord } from "../hub/fold.ts"
 import { agentIdentity } from "../hub/identity.ts"
 import { readMonitorState } from "../hub/monitor.ts"
@@ -364,6 +364,7 @@ const server: Plugin = async (input, options) => {
   let initialization: Promise<{ hubDir: string; log: EventLog }> | undefined
   const sessions = new Map<string, SessionNode>()
   const comms = new Map<string, CommsPointer>()
+  const commsTail = new EventTail()
   const repoRootCache = new Map<string, string | undefined>()
   let identityBaseCache: string | undefined
   let snapshotTimer: ReturnType<typeof setTimeout> | undefined
@@ -376,6 +377,7 @@ const server: Plugin = async (input, options) => {
       const dir = hubRoot(stateDir, cfg.hubGroup ?? projectID)
       mkdirSync(dir, { recursive: true })
       const eventLog = new EventLog(dir, serverID, cfg.retentionBytes)
+      commsTail.seed(dir)
       for (const record of readEventRecords(dir, { maxAgeMs: cfg.maxAgeMs })) {
         applyRecord(sessions, record)
         applyCommsRecord(comms, record)
@@ -460,7 +462,8 @@ const server: Plugin = async (input, options) => {
     output: { message: { id: string }; parts: unknown[] },
   ): Promise<void> => {
     if (!cfg.injectComms) return
-    await ensure()
+    const { hubDir: dir } = await ensure()
+    for (const record of commsTail.read(dir)) applyCommsRecord(comms, record)
     const pending = [...comms.values()]
       .filter((pointer) => pointer.to === sessionID && pointer.state === "sent")
       .sort((a, b) => a.ts - b.ts)

@@ -5,6 +5,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  readSync,
   renameSync,
   rmSync,
   statSync,
@@ -171,6 +172,107 @@ export function readEventRecords(
   }
 
   return newest.values()
+}
+
+export type EventTailCursor = { offset: number; identity: string }
+
+function fileIdentity(stats: { dev: number; ino: number; birthtimeMs: number }): string {
+  return stats.ino === 0 ? `birth:${stats.birthtimeMs}` : `dev:${stats.dev}:ino:${stats.ino}`
+}
+
+export class EventTail {
+  private readonly cursors = new Map<string, EventTailCursor>()
+
+  seed(hubDir: string): void {
+    let names: string[]
+    try {
+      names = readdirSync(hubDir)
+    } catch {
+      return
+    }
+    for (const name of names) {
+      if (!isEventsFile(name)) continue
+      try {
+        const stats = statSync(`${hubDir}/${name}`)
+        this.cursors.set(name, { offset: stats.size, identity: fileIdentity(stats) })
+      } catch {
+        // a missing file will be read from the start when it appears
+      }
+    }
+  }
+
+  read(hubDir: string): EventRecord[] {
+    let names: string[]
+    try {
+      names = readdirSync(hubDir)
+    } catch {
+      return []
+    }
+    const records: EventRecord[] = []
+    for (const name of names.sort()) {
+      if (!isEventsFile(name)) continue
+      records.push(...this.readFile(hubDir, name))
+    }
+    return records
+  }
+
+  private readFile(hubDir: string, name: string): EventRecord[] {
+    const path = `${hubDir}/${name}`
+    let stats: ReturnType<typeof statSync>
+    try {
+      stats = statSync(path)
+    } catch {
+      return []
+    }
+    const identity = fileIdentity(stats)
+    let cursor = this.cursors.get(name)
+    if (!cursor || cursor.identity !== identity || stats.size < cursor.offset) {
+      cursor = { offset: 0, identity }
+    }
+    if (cursor.offset >= stats.size) {
+      this.cursors.set(name, cursor)
+      return []
+    }
+
+    let descriptor: number
+    try {
+      descriptor = openSync(path, "r")
+    } catch {
+      return []
+    }
+    try {
+      const buffer = Buffer.alloc(stats.size - cursor.offset)
+      let filled = 0
+      while (filled < buffer.length) {
+        const bytes = readSync(descriptor, buffer, filled, buffer.length - filled, cursor.offset + filled)
+        if (bytes <= 0) break
+        filled += bytes
+      }
+      const complete = buffer.subarray(0, filled)
+      const lastNewline = complete.lastIndexOf(0x0a)
+      if (lastNewline === -1) {
+        this.cursors.set(name, cursor)
+        return []
+      }
+      const records: EventRecord[] = []
+      for (const line of complete.subarray(0, lastNewline).toString("utf8").split("\n")) {
+        if (!line.trim()) continue
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(line)
+        } catch {
+          continue
+        }
+        if (isEventRecord(parsed)) records.push(parsed)
+      }
+      this.cursors.set(name, { offset: cursor.offset + lastNewline + 1, identity })
+      return records
+    } catch {
+      return []
+    } finally {
+      closeSync(descriptor)
+    }
+  }
 }
 
 export function isEventRecord(value: unknown): value is EventRecord {

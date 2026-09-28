@@ -1,8 +1,17 @@
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { EventLog, readEventRecords } from "../src/hub/append.ts"
+import { EventLog, EventTail, readEventRecords } from "../src/hub/append.ts"
 import { foldSessions, sessionDepth } from "../src/hub/fold.ts"
 import { inboxFor } from "../src/hub/comms.ts"
 import { agentIdentity } from "../src/hub/identity.ts"
@@ -66,6 +75,100 @@ describe("EventLog", () => {
       log.append(record({ ts: 1000, kind: "server.start" }))
       log.append(record({ ts: 10_000, kind: "session.idle", sessionID: "ses_1" }))
       expect(readEventRecords(dir, { now: 10_500, maxAgeMs: 2000 }).length).toBe(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("EventTail", () => {
+  test("reads existing records then only appended bytes", () => {
+    const dir = tempDir()
+    try {
+      const log = new EventLog(dir, "srv1")
+      log.append(record({ kind: "server.start" }))
+      log.append(record({ ts: 2, kind: "session.idle", sessionID: "ses_1" }))
+
+      const tail = new EventTail()
+      expect(tail.read(dir).map((item) => item.kind)).toEqual(["server.start", "session.idle"])
+
+      log.append(record({ ts: 3, kind: "session.agent", sessionID: "ses_1" }))
+      expect(tail.read(dir).map((item) => item.kind)).toEqual(["session.agent"])
+      expect(tail.read(dir)).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("seed skips records that were already replayed", () => {
+    const dir = tempDir()
+    try {
+      const log = new EventLog(dir, "srv1")
+      log.append(record({ kind: "server.start" }))
+
+      const tail = new EventTail()
+      tail.seed(dir)
+      expect(tail.read(dir)).toEqual([])
+
+      log.append(record({ ts: 2, kind: "session.idle", sessionID: "ses_1" }))
+      expect(tail.read(dir).map((item) => item.kind)).toEqual(["session.idle"])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("holds a partial trailing line until it is completed", () => {
+    const dir = tempDir()
+    try {
+      const file = join(dir, "events.srv1.jsonl")
+      writeFileSync(file, JSON.stringify(record({ kind: "server.start" })))
+
+      const tail = new EventTail()
+      expect(tail.read(dir)).toEqual([])
+
+      appendFileSync(file, "\n")
+      expect(tail.read(dir).map((item) => item.kind)).toEqual(["server.start"])
+      expect(tail.read(dir)).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("resets after the file shrinks", () => {
+    const dir = tempDir()
+    try {
+      const file = join(dir, "events.srv1.jsonl")
+      const log = new EventLog(dir, "srv1")
+      log.append(record({ kind: "server.start" }))
+      log.append(record({ ts: 2, kind: "session.idle", sessionID: "ses_1" }))
+
+      const tail = new EventTail()
+      expect(tail.read(dir).length).toBe(2)
+
+      writeFileSync(file, `${JSON.stringify(record({ ts: 3, kind: "session.agent", sessionID: "ses_1" }))}\n`)
+      expect(tail.read(dir).map((item) => item.ts)).toEqual([3])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("resets after the file is replaced", () => {
+    const dir = tempDir()
+    try {
+      const file = join(dir, "events.srv1.jsonl")
+      const log = new EventLog(dir, "srv1")
+      log.append(record({ kind: "server.start" }))
+
+      const tail = new EventTail()
+      expect(tail.read(dir).length).toBe(1)
+
+      const replacement = join(dir, "replacement.jsonl")
+      writeFileSync(
+        replacement,
+        `${JSON.stringify(record({ ts: 2, kind: "session.idle", sessionID: "ses_1", summary: "replaced" }))}\n`,
+      )
+      renameSync(replacement, file)
+      expect(tail.read(dir)).toEqual([record({ ts: 2, kind: "session.idle", sessionID: "ses_1", summary: "replaced" })])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

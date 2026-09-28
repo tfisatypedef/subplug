@@ -5,7 +5,7 @@ import { hostname, tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Hooks, PluginInput } from "@opencode-ai/plugin"
 import serverModule, { STATE_DIR_TIMEOUT_MS, stateDirTimeoutMs } from "../src/server/index.ts"
-import { readEventRecords } from "../src/hub/append.ts"
+import { EventLog, readEventRecords } from "../src/hub/append.ts"
 import { fallbackStateDir, hubRoot } from "../src/hub/paths.ts"
 import type { EventRecord } from "../src/shared/types.ts"
 
@@ -758,6 +758,42 @@ describe("server plugin comms injection", () => {
 
     const later: Array<Record<string, unknown>> = []
     await onMessage({ sessionID: "ses_injecttarget1" }, { message: { id: "msg_user00000002" }, parts: later })
+    expect(later.length).toBe(0)
+  })
+
+  test("tails comms written to the hub after bootstrap", async () => {
+    const repo = seedRepo([])
+    const stateDir = tempDir("state-")
+    const hooks = await startPlugin(repo, stateDir)
+    const bootstrapped = await waitFor(() => hubEvents(stateDir).some((event) => event.kind === "server.start"))
+    expect(bootstrapped).toBe(true)
+
+    const other = new EventLog(hubRoot(stateDir, PROJECT_ID), "other-server")
+    other.append({
+      ts: Date.now(),
+      serverID: "other-server",
+      sessionID: "ses_freshtail0001",
+      kind: "comms.sent",
+      summary: "fresh pointer summary",
+      refs: {
+        msgID: "msg_fresh_tail",
+        to: "ses_freshtail0001",
+        from: "other@host",
+        kind: "message",
+        delivery: "queue",
+      },
+    })
+
+    const onMessage = hooks["chat.message"] as unknown as MessageHook
+    const parts: Array<Record<string, unknown>> = []
+    await onMessage({ sessionID: "ses_freshtail0001" }, { message: { id: "msg_user_fresh001" }, parts })
+
+    expect(parts.length).toBe(1)
+    expect(String(parts[0]?.text ?? "")).toContain("fresh pointer summary")
+    expect(hubEvents(stateDir).filter((record) => record.kind === "comms.delivered").length).toBe(1)
+
+    const later: Array<Record<string, unknown>> = []
+    await onMessage({ sessionID: "ses_freshtail0001" }, { message: { id: "msg_user_fresh002" }, parts: later })
     expect(later.length).toBe(0)
   })
 
