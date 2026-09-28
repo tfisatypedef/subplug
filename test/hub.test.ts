@@ -72,6 +72,39 @@ describe("EventLog", () => {
   })
 })
 
+describe("readEventRecords limit", () => {
+  test("keeps the globally newest records across files", () => {
+    const dir = tempDir()
+    try {
+      const first = new EventLog(dir, "srv-a")
+      first.append(record({ ts: 100, serverID: "srv-a", kind: "session.idle", sessionID: "ses_a" }))
+      first.append(record({ ts: 400, serverID: "srv-a", kind: "session.idle", sessionID: "ses_a" }))
+      const second = new EventLog(dir, "srv-b")
+      second.append(record({ ts: 200, serverID: "srv-b", kind: "session.idle", sessionID: "ses_b" }))
+      second.append(record({ ts: 300, serverID: "srv-b", kind: "session.idle", sessionID: "ses_b" }))
+
+      expect(readEventRecords(dir, { maxRecords: 2 }).map((item) => item.ts)).toEqual([300, 400])
+      expect(readEventRecords(dir, { maxRecords: 3 }).map((item) => item.ts)).toEqual([200, 300, 400])
+      expect(readEventRecords(dir, { maxRecords: 0 })).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("breaks equal timestamps by append order", () => {
+    const dir = tempDir()
+    try {
+      const log = new EventLog(dir, "srv-a")
+      for (const summary of ["first", "second", "third"]) {
+        log.append(record({ ts: 500, kind: "session.idle", sessionID: "ses_a", summary }))
+      }
+      expect(readEventRecords(dir, { maxRecords: 2 }).map((item) => item.summary)).toEqual(["second", "third"])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe("cross-server merge", () => {
   test("folds multiple server logs into one timeline", () => {
     const dir = tempDir()
