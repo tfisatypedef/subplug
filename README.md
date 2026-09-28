@@ -161,11 +161,9 @@ the request.
   Project / Status / Agent / Hierarchy (default Project; Hierarchy keeps the
   nested parent/child tree and its collapse state in the TUI KV store), and rows
   with a selection caret, status dot, title, status column, and age. A right-hand
-  details pane (wide terminals) is a square, bordered, vertically scrollable
-  panel showing the selected session's id, directory, agent, model, identity,
-  subtree rollup, joined claims, pending inbox, last command, and a short
-  transcript preview; long lines clip and marquee (ping-pong) while hovered
-  instead of wrapping. Open with the `/subplug`
+  details pane (terminals ≥ 90 columns) shows the selected session's id,
+  directory, agent, model, identity, subtree rollup, joined claims, pending
+  inbox, last command, and a short transcript preview. Open with the `/subplug`
   command or `ctrl+alt+a`. `↑`/`↓` selects, `pgup`/`pgdn` page, `home`/`end`
   jump, `tab`/`shift+tab` cycles the filter, `g` cycles grouping, `/` opens a
   searchable session picker, `?` toggles help, `←`/`→` collapse/expand in

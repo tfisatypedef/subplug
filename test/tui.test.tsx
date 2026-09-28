@@ -136,42 +136,7 @@ describe("subplug TUI layout", () => {
     const columns = lines.find((line) => line.includes("Tasks") && line.includes("Status"))
     expect(columns).toBeDefined()
     expect(lines.some((line) => line.includes("Task details"))).toBe(true)
-    expect(lines.some((line) => line.includes("┌") && line.includes("┐"))).toBe(true)
     expect(lines.some((line) => line.includes("root session"))).toBe(true)
-    setup.renderer.destroy()
-  })
-
-  test("hovering a long details line scrolls it instead of wrapping", async () => {
-    const longDirectory = "/aaa/very/long/path/that/should/marquee/across/columns"
-    const state: MonitorState = {
-      ...monitorState(),
-      sessions: [
-        session({ sessionID: "ses_root00000001", title: "root session", directory: longDirectory, lastEventAt: 2000 }),
-        session({ sessionID: "ses_child0000001", title: "child session", kind: "subagent", parentID: "ses_root00000001", directory: longDirectory }),
-      ],
-    }
-    const setup = await renderHosted(() => (
-      <Dashboard
-        api={stubApi(WIDTH, HEIGHT)}
-        state={() => state}
-        route="subplug"
-        command="subplug.open"
-        onClose={() => undefined}
-        openSession={() => undefined}
-        compose={() => undefined}
-      />
-    ))
-    const find = () => setup.captureCharFrame().split("\n")
-    const row = find().findIndex((line) => line.includes("Directory"))
-    expect(row).toBeGreaterThan(0)
-    const before = find()[row + 1] ?? ""
-    expect(before).toContain("/aaa/very/long")
-
-    await setup.mockMouse.moveTo(90, row + 1)
-    await new Promise((resolve) => setTimeout(resolve, 700))
-    await setup.renderOnce()
-    const after = find()[row + 1] ?? ""
-    expect(after).not.toBe(before)
     setup.renderer.destroy()
   })
 

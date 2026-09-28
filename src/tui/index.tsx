@@ -2,7 +2,7 @@
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { randomUUID } from "node:crypto"
-import type { KeyEvent, RGBA, Renderable, TextRenderable } from "@opentui/core"
+import type { KeyEvent, RGBA, Renderable } from "@opentui/core"
 import { createBindingLookup, type BindingConfig } from "@opentui/keymap/extras"
 import { createEffect, createSignal, onCleanup } from "solid-js"
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule, TuiSlotPlugin } from "@opencode-ai/plugin/tui"
@@ -25,7 +25,6 @@ import {
   buildCenterRows,
   clampIndex,
   clampWindow,
-  createMarquee,
   filterCounts,
   groupingLabel,
   nextGrouping,
@@ -623,43 +622,15 @@ function squish(value: string, width: number): string {
   return width <= 1 ? value.slice(0, width) : `${value.slice(0, width - 1)}…`
 }
 
-function MarqueeLine(props: {
-  text: string
-  width: number
-  fg: RGBA | string
-  bold?: boolean
-}) {
-  let ref: TextRenderable | undefined
-  const marquee = createMarquee(() => ref)
-  onCleanup(() => marquee.stop())
-  return (
-    <text
-      flexShrink={0}
-      width={props.width}
-      wrapMode="none"
-      fg={props.fg}
-      ref={(el) => {
-        ref = el
-      }}
-      onMouseOver={() => marquee.start()}
-      onMouseOut={() => marquee.stop()}
-    >
-      {props.bold ? <b>{props.text}</b> : props.text}
-    </text>
-  )
-}
-
 function DetailsPane(props: {
   api: TuiPluginApi
   state: () => MonitorState
   session: SessionNode
   current: boolean
-  side: number
 }) {
   const skin = () => skinOf(props.api)
   const snapshot = () => props.state()
   const now = () => snapshot().generatedAt
-  const inner = () => Math.max(8, props.side - 3)
   const group = () => statusGroup(props.session, sessionNeedsInput(props.api, props.session.sessionID))
   const rollup = () => rollupSubtree(snapshot().sessions, props.session.sessionID)
   const claims = () =>
@@ -691,65 +662,92 @@ function DetailsPane(props: {
     })
   })
 
-  const lines = (): Array<{ text: string; fg: RGBA | string; bold?: boolean }> => {
-    const session = props.session
-    const out: Array<{ text: string; fg: RGBA | string; bold?: boolean }> = [
-      { text: "Task details", fg: skin().accent, bold: true },
-      { text: sessionLabel(session), fg: skin().text, bold: true },
-      {
-        text: `${groupMark(group(), session.status)} ${statusGroupLabel(group())}${props.current ? "  · current" : ""}`,
-        fg: groupColor(skin(), group()),
-      },
-      { text: " ", fg: skin().text },
-      { text: "Session", fg: skin().muted },
-      { text: shortID(session.sessionID), fg: skin().text },
-      { text: "Directory", fg: skin().muted },
-      { text: session.directory ?? "—", fg: skin().text },
-    ]
-    if (session.agent) out.push({ text: `Agent: ${session.agent}`, fg: skin().text })
-    if (session.model) out.push({ text: `Model: ${session.model}`, fg: skin().text })
-    if (session.identity) out.push({ text: session.identity, fg: skin().muted })
-    out.push({ text: " ", fg: skin().text })
-    out.push({ text: rollupDetail(rollup()), fg: skin().success })
-    const cmd = command()
-    if (cmd) out.push({ text: `last ${cmd.category} · ${cmd.summary.slice(0, 40)} · ${age(cmd.ts, now())} ago`, fg: skin().muted })
-    if (claims().length) {
-      out.push({ text: " ", fg: skin().text })
-      out.push({ text: `Claims (${claims().length})`, fg: skin().accent, bold: true })
-      for (const { claim } of claims()) {
-        out.push({ text: `${claim.claimID.slice(-8)} ${claimLabel(claim, now())}`, fg: skin().text })
-      }
-    }
-    if (inbox().length) {
-      out.push({ text: " ", fg: skin().text })
-      out.push({ text: `Inbox (${inbox().length})`, fg: skin().accent, bold: true })
-      for (const pointer of inbox()) out.push({ text: `${pointer.from} ${pointer.summary.slice(0, 40)}`, fg: skin().text })
-    }
-    if (preview().length) {
-      out.push({ text: " ", fg: skin().text })
-      out.push({ text: "Recent", fg: skin().accent, bold: true })
-      for (const line of preview()) out.push({ text: line, fg: skin().muted })
-    }
-    return out
-  }
-
   return (
-    <scrollbox
+    <box
+      flexDirection="column"
       flexShrink={0}
-      alignSelf="flex-start"
-      width={props.side}
-      height={props.side}
-      border
-      borderStyle="single"
-      borderColor={skin().border}
-      scrollY
-      viewportCulling={false}
-      contentOptions={{ flexDirection: "column" }}
+      width={38}
+      minHeight={0}
+      overflow="hidden"
+      paddingLeft={1}
+      paddingRight={1}
+      gap={0}
     >
-      {lines().map((line) => (
-        <MarqueeLine text={line.text} width={inner()} fg={line.fg} bold={line.bold} />
-      ))}
-    </scrollbox>
+      <text flexShrink={0} fg={skin().accent}>
+        <b>Task details</b>
+      </text>
+      <text flexShrink={0} truncate fg={skin().text}>
+        <b>{sessionLabel(props.session)}</b>
+      </text>
+      <text flexShrink={0} fg={groupColor(skin(), group())}>
+        {groupMark(group(), props.session.status)} {statusGroupLabel(group())}
+        {props.current ? <span style={{ fg: skin().muted }}>  · current</span> : null}
+      </text>
+      <text flexShrink={0}> </text>
+      <text flexShrink={0} fg={skin().muted}>Session</text>
+      <text flexShrink={0} fg={skin().text}>{shortID(props.session.sessionID)}</text>
+      <text flexShrink={0} fg={skin().muted}>Directory</text>
+      <text flexShrink={0} truncate fg={skin().text}>{props.session.directory ?? "—"}</text>
+      {props.session.agent ? (
+        <text flexShrink={0} truncate fg={skin().text}>
+          <span style={{ fg: skin().muted }}>Agent: </span>
+          {props.session.agent}
+        </text>
+      ) : null}
+      {props.session.model ? (
+        <text flexShrink={0} truncate fg={skin().text}>
+          <span style={{ fg: skin().muted }}>Model: </span>
+          {props.session.model}
+        </text>
+      ) : null}
+      {props.session.identity ? (
+        <text flexShrink={0} truncate fg={skin().muted}>{props.session.identity}</text>
+      ) : null}
+      <text flexShrink={0}> </text>
+      <text flexShrink={0} fg={skin().success}>{rollupDetail(rollup())}</text>
+      {command() ? (
+        <text flexShrink={0} truncate fg={skin().muted}>
+          last {command()!.category} · {command()!.summary.slice(0, 40)} · {age(command()!.ts, now())} ago
+        </text>
+      ) : null}
+      {claims().length ? (
+        <>
+          <text flexShrink={0}> </text>
+          <text flexShrink={0} fg={skin().accent}>
+            <b>Claims ({claims().length})</b>
+          </text>
+          {claims().map(({ claim }) => (
+            <text flexShrink={0} truncate fg={skin().text}>
+              <span style={{ fg: skin().muted }}>{claim.claimID.slice(-8)}</span> {claimLabel(claim, now())}
+            </text>
+          ))}
+        </>
+      ) : null}
+      {inbox().length ? (
+        <>
+          <text flexShrink={0}> </text>
+          <text flexShrink={0} fg={skin().accent}>
+            <b>Inbox ({inbox().length})</b>
+          </text>
+          {inbox().map((pointer) => (
+            <text flexShrink={0} truncate fg={skin().text}>
+              <span style={{ fg: skin().muted }}>{pointer.from}</span> {pointer.summary.slice(0, 40)}
+            </text>
+          ))}
+        </>
+      ) : null}
+      {preview().length ? (
+        <>
+          <text flexShrink={0}> </text>
+          <text flexShrink={0} fg={skin().accent}>
+            <b>Recent</b>
+          </text>
+          {preview().map((line) => (
+            <text flexShrink={0} truncate fg={skin().muted}>{line}</text>
+          ))}
+        </>
+      ) : null}
+    </box>
   )
 }
 
@@ -791,7 +789,7 @@ export function Dashboard(props: {
   const rows = () => data().rows
   const tasks = () => data().tasks
   const displayIndex = () => selectedDisplayIndex(rows(), selectedTask())
-  const viewport = () => Math.max(3, (props.api.renderer?.height ?? 24) - 12)
+  const viewport = () => Math.max(3, (props.api.renderer?.height ?? 24) - 9)
   const start = () => clampWindow(rows().length, Math.max(0, displayIndex()), viewport())
   const visible = () => rows().slice(start(), start() + viewport())
   const selected = () => tasks()[clampIndex(selectedTask(), tasks().length)]
@@ -803,12 +801,8 @@ export function Dashboard(props: {
     }
     return undefined
   }
-  const panelSide = () => {
-    const available = (props.api.renderer?.height ?? 24) - 10
-    return Math.max(10, Math.min(38, available))
-  }
-  const wide = () => width() >= Math.max(80, panelSide() + 40)
-  const listWidth = () => (wide() ? Math.max(20, width() - 6 - panelSide()) : Math.max(16, width() - 4))
+  const wide = () => width() >= 90
+  const listWidth = () => (wide() ? Math.max(24, width() - 44) : Math.max(16, width() - 4))
   const showStatus = () => listWidth() >= 56
   const titleWidth = () => Math.max(8, listWidth() - 5 - (showStatus() ? 11 : 0) - 9)
 
@@ -1076,7 +1070,6 @@ export function Dashboard(props: {
                 state={props.state}
                 session={selected()!.session}
                 current={currentID() === selected()!.session.sessionID}
-                side={panelSide()}
               />
             ) : null}
           </box>
