@@ -6,7 +6,9 @@ working on a project, overlaid with the `coordination/` claim registry.
 Status: **P0 complete; P1/P2/P3 core implemented and load-verified**. Server tap,
 session fold, coord bridge, `swarm_status` tool, `shell.env` identity injection,
 and the TUI sidebar/route/toasts are in place. Remaining: live `task`-subagent
-observation and visual TUI checks (see "Implementation status").
+observation and visual TUI checks (see "Implementation status"). **P4 (viewing
+subagents) and P5 (session comms) are scoped below; both harness probes have
+run and their results are recorded.**
 
 ## Locked decisions
 
@@ -20,7 +22,13 @@ observation and visual TUI checks (see "Implementation status").
   (`@opentui/solid`) JSX, not React.
 - **Scope**: local machine, per project. Cross-clone / cross-window aggregation
   is deferred to P4+.
-- **Mode**: read-only monitoring. No abort/steer/control in v1.
+- **Mode**: viewing stays read-only. P5 adds a **comms tier** that is enabled by
+  default, queue-only, addressed, and message-initiated by a human or an agent
+  tool; no abort, no steer, no gating of other sessions. **v1/flat SDK for both
+  reads and writes** on v1 sessions (`session.prompt`/`promptAsync`,
+  `session.messages`, `session.todo`, `session.children`). The v2
+  `/api/session/...` endpoints are a separate durable store and are not used
+  until sessions are v2-driven (see probe results).
 - **Storage**: hub root derived from opencode's own state dir (TUI:
   `api.state.path.state`; server: derive from `directory`/`worktree`), NOT a
   hardcoded `~/.local/share`. Per-server append-only JSONL plus a folded
@@ -90,6 +98,9 @@ subplug/
   status, expiry, scopes.
 - `MonitorState`: folded sessions + `risks` (recent `command.risk`) + registry;
   `joinClaimsToSessions` maps active claims to sessions by `identity`.
+- `CommsPointer`: `{ ts, serverID, from, to, msgID, kind, delivery, state,
+  summary }` stored as `comms.sent`/`comms.delivered`/`comms.seen` event
+  records; metadata only, bodies stay in the native session store.
 - Redaction: metadata only by default; no message bodies, no secrets.
 
 ## Phases and acceptance
@@ -112,7 +123,19 @@ subplug/
   `tool.execute.before` bash for `git commit|push|coord` and toast warnings
   (never gate). *Accept*: seeded registry shows claims, expiry countdown,
   conflict badge, commit-without-coverage warning.
-- **P4+ — cross-process.** Aggregate multiple clones/windows; optional web view.
+- **P4 — viewing subagents.** Tree rendering, live transcripts (full parts),
+  rollups, `swarm_status` tree format, on-demand context/diff. Read-only.
+  *Accept*: a root→subagent tree renders nested with collapse state; a running
+  subagent's tool call updates live in detail; rollups show subtree cost and
+  busy/error counts; `swarm_status format=tree` returns the tree; unit tests
+  cover the pure helpers.
+- **P5 — session comms.** Composer in the dashboard/detail, `swarm_send` tool,
+  inbox pull, and bounded context injection using the native synthetic-part
+  pattern. Queue-only, metadata-only hub pointers, bodies never in the hub.
+  *Accept*: sending to an idle subagent creates a durable user message in that
+  session and a `comms.sent` pointer; a reply is pullable via `swarm_status`;
+  injection is a no-op with an empty inbox; harness probes pass (see below).
+- **P6+ — cross-process.** Aggregate multiple clones/windows; optional web view.
 
 ## Risks
 
@@ -124,6 +147,19 @@ subplug/
 - Privacy defaults and storage retention.
 - Windows path/EOL parity.
 - Mapping quality when `COORD_AGENT_ID` is absent.
+- Default-on comms contradicts the read-only language in README, package.json,
+  and the `swarm_status` description (`server/index.ts:663`); update all three.
+- Injection runs on the model-request critical path and `readEventRecords`
+  re-parses every JSONL per call; needs memoized folds and a timeout/skip path.
+- Cross-session content is untrusted input; frame as data, never inject via
+  the system prompt by default.
+- Agent-to-agent loops and token burn: addressed-only, no auto-reply, hop
+  cap <= 2, per-session send caps.
+- A prompt to a busy target is consumed at the next step boundary and can
+  interleave with in-flight work; busy sends need a confirm.
+- `comms.*` records must not flow through `fold.ts`'s default `ensure()` path.
+- Plugin-appended parts need ascending ids (the runtime mints them); a random
+  id may sort oddly in the transcript.
 
 ## P0 findings
 
@@ -163,6 +199,151 @@ Confirmed against opencode 1.18.32 with the dev harness (scratch
   Manual modes: `--demo` (seeded TUI check), `--poke-risk` (live toast),
   `--inspect` (folded view for the real `task` test).
 
+## P4/P5 design — viewing subagents + session comms
+
+### Decisions
+
+- Comms is both UI (compose from the overlay) and context injection (replies
+  can land in the current session's context).
+- Write tier enabled by default; queue-only delivery; no steer; no broadcast.
+- Message bodies never enter the hub. Hub records are metadata pointers only
+  (`from`, `to`, `msgID`, `kind`, `delivery`, `state`, redacted `summary`).
+- v1/flat SDK for both reads and writes. The TUI maintains two stores: the
+  sync store backing `api.state.session.*` (v1 `Message`/`Part`, global maps
+  keyed by id) and a durable `session.next.*` store keyed by `sessionID`;
+  neither is assumed for subplug, which reads the flat client.
+- Target policy: idle/background subagents and roots by default; busy targets
+  require an explicit confirm; in-flight synchronous children are refused with
+  an offer to promote them to background (`experimental.session.background`).
+
+### Verified mechanics (opencode 1.18.32, binary inspection)
+
+- `experimental.chat.system.transform` is awaited in `LLMRequestPrep.prepare`
+  with `{sessionID, model}` and appends strings to `system[]`; each string
+  becomes its own trailing system message. It also fires for small-model calls
+  (`prepare` handles `e.small`) and compaction, so it is on the request
+  critical path and must be treated as a guarded, opt-in substrate.
+- `experimental.chat.messages.transform` fires in the normal loop and during
+  compaction with `{}` input and the whole message list; it can add synthetic
+  model messages but has no sessionID input.
+- `chat.message` output parts are persisted (`updatePart` per part) and
+  `TextPartInput.synthetic` exists. It fires for subagent turns too, because
+  the `task` tool drives children through `SessionPrompt.prompt`.
+- `session.prompt` with `noReply: true` persists the user message and returns
+  without running a turn; without `noReply` it calls `ensureRunning`, so a busy
+  session picks the message up at the **next step boundary of the same run**
+  (the loop re-reads the message stream each iteration and exits only when the
+  latest assistant's `parentID` equals the latest user message id).
+- `task` subagents run inside the parent's tool call (awaited, AbortController)
+  and can be promoted to background. A completed background subagent already
+  injects a synthetic text part into the parent via
+  `TaskTool.injectBackgroundResult` with `Ur({sessionID, state, summary, text})`
+  framing; the task output reports `task_id: <childID>`. Mirror this shape.
+- `fold.ts` `applyRecord`'s default branch calls `ensure()` for any record with
+  a `sessionID` (fold.ts:87-91). New `comms.*` records must be fold-inert or
+  they will resurrect deleted sessions and reorder the dashboard.
+
+### Probe results (harness, opencode 1.18.32)
+
+`bun run scripts/dev-harness.ts --probe-comms`:
+
+- A v1 `noReply: true` prompt to a **busy** child is admitted (HTTP 200) and
+  persisted in the v1 message list; the child reports `busy` while the long
+  shell runs.
+- A v2 `/api/session/{id}/prompt` with `delivery: "queue"` on the same
+  v1-created session is also admitted (HTTP 200, `admittedSeq`), but the
+  message appears only in the **v2 durable store** (`/api/session/{id}/context`)
+  and never in the v1 message list; the v1 loop never consumes it. v2 and v1
+  are parallel engines: do not mix v2 writes with v1 sessions.
+- Ordering after the shell: `[user(shell), assistant(shell), user(noReply)]`.
+
+`bun run scripts/dev-harness.ts --probe-tui-state`:
+
+- `api.state.session.messages(childID)` returns a non-current, subagent
+  session's message (1) from the in-process store; `api.state.session.get`
+  resolves it. Live transcript can read the store instead of polling.
+- `api.state.session.count()` only includes sessions with content: the empty
+  root session is absent (`get(rootID)` false). Render metadata from the hub
+  for empty sessions and transcript from the store when present.
+
+### Harness notes from probing
+
+- A zombie `opencode serve` left by a failed run held port 4599 and answered
+  later harness runs with stale code, causing misleading failures (missing
+  plugin options, no hub, no identity). The harness now picks a random per-run
+  port, kills stale listeners before spawn, retries startup, and kills the
+  process group.
+- `SUBPLUG_SKIP_BASELINE=1` skips the baseline import; useful for probes that
+  need a quiet hub.
+
+### Corrections to the earlier brainstorm
+
+- "Queue = no mid-loop disruption" is false; queue means "next step boundary"
+  and can interleave with in-flight work. Hence the busy-target confirm.
+- Do not sum `step-finish` tokens for context %; each step's input already
+  includes the whole context. Sum cost only; use last/max input for %.
+- v2 is **not** safe for reads on v1 sessions either: it is a separate store.
+  Use the flat client (what the TUI's `api.state.session` sync store mirrors)
+  for both reads and writes until sessions are v2-driven.
+
+### Hub records (metadata only)
+
+```
+comms.sent      {from, to, msgID, kind, delivery:"queue", summary:redacted}
+comms.delivered {to, msgID, at}
+comms.seen      {by, msgID, at}
+```
+
+Written with a per-process `serverID` file like other events; readers fold all
+files. `readEventRecords` re-reads and re-parses every JSONL per call, so the
+injection path needs a memoized/incremental fold before it can run per model
+call.
+
+### P4 scope
+
+1. Tree: nested rendering via `sessionDepth`; collapse state in `api.kv`;
+   Enter descends; breadcrumb back-stack; orphan/deleted markers; show
+   `task_id`.
+2. Transcript: full parts (text, reasoning folded, tool with
+   `state.status`/`title`/elapsed/output tail, file/patch). Source:
+   `api.state.session.messages()/part()` (probe-confirmed for non-current
+   sessions with content), falling back to the flat client
+   `api.client.session.messages({ sessionID })` for sessions not in the store.
+   Do not use the v2 store for v1 sessions.
+3. Rollups: subtree cost, busy/error descendant counts, per-child last tool and
+   age.
+4. `swarm_status`: add `tree` format; keep excerpts opt-in.
+5. On demand: flat `session.messages` (context window), `session.todo`,
+   `session.children`, `session.diff`; keep the hub for metadata.
+
+### P5 scope
+
+1. Composer: dashboard/detail key -> `DialogPrompt` -> v1 `session.prompt`.
+2. `swarm_send` tool (accepts `session` or `task_id`) + inbox pull folded into
+   `swarm_status`.
+3. Injection: synthetic text part on the target context (native pattern), or
+   guarded `system.transform` later. Default-on but a strict no-op when the
+   inbox is empty; addressed; deduped by msgID; TTL'd pointers; capped bytes;
+   short fetch timeout that skips on failure.
+
+### Probes (harness)
+
+- `--probe-comms` (done): create root + child; start a long shell on the child;
+  send v1 `noReply` and v2 `/api/session/{id}/prompt` while busy; await; report
+  admission status, message order, and v2 context interop. Results above.
+- `--probe-tui-state` (done): probe TUI plugin creates a root + child, sends a
+  `noReply` message, and writes `api.state.session.count()` plus
+  `messages(rootID).length` / `messages(childID).length` to a marker file.
+  Results above.
+- Manual: spawn a background subagent and read the parent transcript to capture
+  the native `Ur(...)` injection framing.
+
+### Test seams
+
+Pure `buildSessionTree`, `rollupSubtree`, `resolveTargets`, and
+`buildInboxBlock` helpers so `test/hub.test.ts`-style unit tests cover the
+logic; the harness only proves hooks fire and pointers land.
+
 ## Implementation status
 
 | Piece | Status | Evidence |
@@ -180,6 +361,11 @@ Confirmed against opencode 1.18.32 with the dev harness (scratch
 | TUI sidebar/route/risk toast (SolidJS) | load-verified | TUI marker from `--tui`; `--demo` seed for visual check |
 | Real `task` subagent run | user-run | prompt + `--inspect` documented in README |
 | Visual TUI + toast/attention behavior | user-run | `--demo` + `--poke-risk` documented in README |
+| Harness robustness (random port, stale kill, retry, XDG isolation) | done | baseline spike stable; zombie cause documented |
+| Probe: busy-session admission + v1/v2 store split | done | `--probe-comms` (see results) |
+| Probe: plugin store coverage for subagents | done | `--probe-tui-state` (see results) |
+| P4 viewing implementation | pending | plan in "P4 scope" |
+| P5 comms implementation | pending | plan in "P5 scope" |
 
 ## Handoff prompt for a fresh window
 
@@ -195,7 +381,15 @@ Confirmed against opencode 1.18.32 with the dev harness (scratch
 > TUI module directly (`bun -e 'await import(...)'`) to sanity-check module
 > load. The user then runs the manual checks from the README: `--demo --keep` +
 > `opencode` for the visual TUI, `--poke-risk` for the toast, and a real `task`
-> prompt + `--inspect` for live parent/child records. Next phase after that is
-> portability/packaging (own GitHub repo, LICENSE, `bun.lock`, `.gitattributes`,
-> dual-platform README, engines, CI, `resolveStateDir` retry/fallback fix). Keep
-> `client.path.get()` out of eager plugin init.
+> prompt + `--inspect` for live parent/child records. P4 (viewing subagents) and
+> P5 (session comms) are scoped in "P4/P5 design"; both probes have run and
+> their results are recorded there. Use the flat client
+> (`api.client.session.messages/todo/children/prompt`) for v1 sessions, not the
+> v2 `/api/session` store, and read transcripts from
+> `api.state.session.messages()/part()` when the session has content. Keep
+> `client.path.get()` out of eager plugin init, and keep any inbox fetch off the
+> model-request critical path unless memoized and timeout-guarded. Harness
+> gotcha: always use a fresh/random port and kill stale listeners; a zombie
+> serve silently answers with stale code. Portability/packaging (own GitHub
+> repo, LICENSE, `bun.lock`, `.gitattributes`, dual-platform README, engines,
+> CI, `resolveStateDir` retry/fallback fix) remains P6.

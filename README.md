@@ -134,9 +134,16 @@ Message excerpts are read live and are never written to the hub.
 bun install
 bun run typecheck
 bun test
-bun run scripts/dev-harness.ts        # headless server spike (scratch config + repo)
-bun run scripts/dev-harness.ts --tui  # headless TUI load check (marker file)
+bun run scripts/dev-harness.ts                 # headless server spike (scratch config + repo)
+bun run scripts/dev-harness.ts --tui           # headless TUI load check (marker file)
+bun run scripts/dev-harness.ts --probe-comms   # busy-session admission + v1/v2 store split
+bun run scripts/dev-harness.ts --probe-tui-state  # plugin store coverage for subagents
 ```
+
+Each harness run uses a random port and an isolated XDG state under
+`.harness/xdg`, so it does not touch your real opencode state. `--keep` leaves
+the scratch dir behind; `SUBPLUG_SKIP_BASELINE=1` skips the baseline import for
+quiet probes (see PLAN.md "P4/P5 design").
 
 The harness seeds a `coordination/claims` registry, starts a throwaway
 `opencode serve` under a scratch `OPENCODE_CONFIG_DIR`, creates a root and a
