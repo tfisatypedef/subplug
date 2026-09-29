@@ -11,7 +11,7 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { EventLog, EventTail, readEventRecords } from "../src/hub/append.ts"
+import { EventLog, EventTail, readEventRecords, readSessionRecords } from "../src/hub/append.ts"
 import { foldSessions, sessionDepth } from "../src/hub/fold.ts"
 import { inboxFor } from "../src/hub/comms.ts"
 import { agentIdentity } from "../src/hub/identity.ts"
@@ -28,6 +28,58 @@ function record(overrides: Partial<EventRecord> & { kind: EventRecord["kind"] })
 }
 
 describe("EventLog", () => {
+  test("equal timestamps replay rotated records before active records", () => {
+    const dir = tempDir()
+    try {
+      const log = new EventLog(dir, "srv1", 1)
+      log.append(record({ kind: "session.status", sessionID: "child", refs: { status: "busy" } }))
+      log.append(record({ kind: "session.idle", sessionID: "child" }))
+      expect(foldSessions(readEventRecords(dir))[0]?.status).toBe("idle")
+      expect(new EventTail().read(dir).map((item) => item.kind)).toEqual(["session.status", "session.idle"])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  test("checkpoints preserve active child fields, deletion, and other writers' newer updates", () => {
+    const dir = tempDir()
+    try {
+      const first = new EventLog(dir, "srv1", 1)
+      const second = new EventLog(dir, "srv2", 1)
+      first.append(record({ ts: 1, kind: "session.created", sessionID: "child", parentID: "root", refs: { title: "Child", agent: "build", model: "model-a", cost: 1 } }))
+      first.append(record({ ts: 2, kind: "session.identity", sessionID: "child", refs: { identity: "a@host/child" } }))
+      first.append(record({ ts: 3, kind: "session.created", sessionID: "stale" }))
+      first.append(record({ ts: 4, kind: "session.deleted", sessionID: "removed" }))
+      first.append(record({ ts: 5, kind: "session.status", sessionID: "child", refs: { status: "busy" } }))
+      second.append(record({ ts: 95, serverID: "srv2", kind: "session.updated", sessionID: "child", refs: { title: "Renamed", cost: 2 } }))
+      second.append(record({ ts: 96, serverID: "srv2", kind: "session.idle", sessionID: "child" }))
+      // Force both writers to discard multiple segments and checkpoint fields.
+      for (let ts = 97; ts <= 100; ts += 1) {
+        first.append(record({ ts, kind: "message", sessionID: "child" }))
+        second.append(record({ ts, serverID: "srv2", kind: "message", sessionID: "child" }))
+      }
+      const state = readMonitorState(dir, undefined, { now: 101, maxAgeMs: 10 })
+      expect(state.sessions).toHaveLength(1)
+      expect(state.sessions[0]).toMatchObject({ sessionID: "child", kind: "subagent", parentID: "root", title: "Renamed", identity: "a@host/child", agent: "build", model: "model-a", cost: 2, status: "idle" })
+      const older = readMonitorState(dir, undefined, { now: 101, maxAgeMs: 1000 })
+      expect(older.sessions.find((session) => session.sessionID === "removed")?.deleted).toBe(true)
+      expect(readMonitorState(dir, undefined, { now: 111, maxAgeMs: 10 }).sessions).toEqual([])
+      // A fresh reader/log instance recovers the same durable state.
+      new EventLog(dir, "srv1", 1).append(record({ ts: 102, kind: "session.idle", sessionID: "child" }))
+      expect(readMonitorState(dir, undefined, { now: 103, maxAgeMs: 10 }).sessions[0]?.identity).toBe("a@host/child")
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  test("session replay reduces repetitive history to field sources", () => {
+    const dir = tempDir()
+    try {
+      const log = new EventLog(dir, "srv1")
+      log.append(record({ ts: 1, kind: "session.created", sessionID: "child", parentID: "root", refs: { title: "Child" } }))
+      for (let ts = 2; ts < 2000; ts += 1) log.append(record({ ts, kind: "message", sessionID: "child" }))
+      const sources = readSessionRecords(dir)
+      expect(sources).toHaveLength(2)
+      expect(foldSessions(sources)[0]).toMatchObject({ parentID: "root", title: "Child", lastEventAt: 1999 })
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
   test("appends JSONL records that replay after a restart", () => {
     const dir = tempDir()
     try {

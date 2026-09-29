@@ -699,7 +699,7 @@ describe("TUI dialog keyboard isolation", () => {
 })
 
 describe("TUI follow-up composer", () => {
-  function setup(status: "idle" | "busy", fail = false) {
+  function setup(status: "idle" | "busy", fail = false, enabled = true) {
     const hubDir = mkdtempSync(join(tmpdir(), "subplug-tui-follow-up-"))
     followUpDirs.push(hubDir)
     const state = { ...monitorState(), hubDir }
@@ -724,7 +724,7 @@ describe("TUI follow-up composer", () => {
         toast: (toast: { variant: string; message: string }) => { toasts.push(toast) },
       },
     } as unknown as TuiPluginApi
-    const compose = createFollowUpComposer(api, () => state)
+    const compose = createFollowUpComposer(api, () => state, enabled)
     const waitFor = async (predicate: () => boolean) => {
       const deadline = Date.now() + 2000
       while (!predicate() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5))
@@ -746,6 +746,15 @@ describe("TUI follow-up composer", () => {
       kind: "comms.sent", refs: { from: "user", to: "ses_child0000001", kind: "follow-up", delivery: "prompt" },
     })
     expect(harness.toasts[0]?.variant).toBe("success")
+  })
+
+  test("delivery opt-out prevents opening the composer or calling the transport", () => {
+    const harness = setup("idle", false, false)
+    harness.compose("ses_child0000001", "idle")
+    expect(harness.prompt()).toBeUndefined()
+    expect(harness.calls).toHaveLength(0)
+    expect(harness.toasts[0]?.message).toContain("disabled")
+    expect(readEventRecords(harness.hubDir)).toHaveLength(0)
   })
 
   test("preserves context while confirming a target that became busy", async () => {

@@ -5,6 +5,11 @@ export const MAX_INBOX = 10
 export const INBOX_BLOCK_MAX_BYTES = 2000
 export const COMMS_SUMMARY_CHARS = 160
 
+type Receipt = { state: "delivered" | "seen"; at: number }
+// Receipt files may be tailed before the sender's file, even on a later poll.
+// Keep orphans private so they cannot appear as incomplete inbox pointers.
+const pendingReceipts = new WeakMap<Map<string, CommsPointer>, Map<string, Receipt>>()
+
 export function messageSummary(text: string, maxChars = COMMS_SUMMARY_CHARS): string {
   const collapsed = text.replace(/\s+/g, " ").trim()
   return collapsed.length > maxChars ? `${collapsed.slice(0, maxChars - 1)}…` : collapsed
@@ -34,19 +39,36 @@ export function applyCommsRecord(byID: Map<string, CommsPointer>, record: EventR
             : "",
       serverID: record.serverID,
     })
+    const receipt = pendingReceipts.get(byID)?.get(msgID)
+    if (receipt) {
+      const pointer = byID.get(msgID)!
+      pointer.state = receipt.state
+      pointer.at = receipt.at
+      pendingReceipts.get(byID)?.delete(msgID)
+    }
     return
   }
 
+  if (record.kind !== "comms.delivered" && record.kind !== "comms.seen") return
   const existing = byID.get(msgID)
-  if (!existing) return
+  if (!existing) {
+    let pending = pendingReceipts.get(byID)
+    if (!pending) { pending = new Map(); pendingReceipts.set(byID, pending) }
+    const prior = pending.get(msgID)
+    pending.set(msgID, {
+      state: prior?.state === "seen" || record.kind === "comms.seen" ? "seen" : "delivered",
+      at: Math.max(prior?.at ?? -Infinity, record.ts),
+    })
+    return
+  }
   if (record.kind === "comms.delivered") {
     if (existing.state === "sent") existing.state = "delivered"
-    existing.at = record.ts
+    existing.at = Math.max(existing.at ?? -Infinity, record.ts)
     return
   }
   if (record.kind === "comms.seen") {
     existing.state = "seen"
-    existing.at = record.ts
+    existing.at = Math.max(existing.at ?? -Infinity, record.ts)
   }
 }
 

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { runInNewContext } from "node:vm"
 import { createWebFetch, startWebServer, webView, type WebSource } from "../src/server/web.ts"
 import type { MonitorState, SessionNode } from "../src/shared/types.ts"
 
@@ -93,5 +94,122 @@ describe("web view", () => {
     } finally {
       started.stop()
     }
+  })
+})
+
+// Execute the actual inline browser script; fetch completion order is controlled
+// so selection and polling races exercise the same handlers as the page.
+async function browser() {
+  class Element {
+    children: Element[] = []
+    className = ""
+    onclick?: () => void
+    writes = 0
+    private content = ""
+    get innerHTML() { return this.content }
+    set innerHTML(value: string) { this.content = value; this.children = []; this.writes++ }
+    get textContent() { return this.content }
+    set textContent(value: string) { this.content = value; this.children = []; this.writes++ }
+    appendChild(child: Element) { this.children.push(child) }
+  }
+  const elements = new Map<string, Element>()
+  const get = (id: string) => {
+    if (!elements.has(id)) elements.set(id, new Element())
+    return elements.get(id)!
+  }
+  const requests: { url: string; resolve: (response: Response) => void }[] = []
+  let poll!: () => Promise<void>
+  const page = await (await createWebFetch(source())(new Request("http://localhost/"))).text()
+  runInNewContext(page.match(/<script>([\s\S]*?)<\/script>/)![1]!, {
+    URLSearchParams, location: { search: "?token=test" },
+    document: { getElementById: get, createElement: () => new Element() },
+    setInterval: (callback: typeof poll) => { poll = callback },
+    fetch: (url: string) => new Promise<Response>((resolve) => requests.push({ url, resolve })),
+  })
+  const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve() }
+  const respond = async (request: (typeof requests)[number], body: unknown, status = 200) => {
+    request.resolve(new Response(JSON.stringify(body), { status }))
+    await flush()
+  }
+  await respond(requests[0]!, webView(monitorState()))
+  const click = (index: number) => get("sessions").children[index]!.onclick!()
+  const transcript = (text: string) => ({ messages: [{ role: "assistant", text }] })
+  return { get, requests, poll, respond, click, transcript }
+}
+
+describe("web browser transcript", () => {
+  test("applies a slow refresh even when a newer poll is still pending", async () => {
+    const b = await browser()
+    b.click(0)
+    const polling = b.poll()
+    await b.respond(b.requests[2]!, webView(monitorState()))
+    await b.respond(b.requests[1]!, b.transcript("slow first result"))
+    expect(b.get("transcript").innerHTML).toContain("slow first result")
+    await b.respond(b.requests[3]!, b.transcript("newer result"))
+    await polling
+    expect(b.get("transcript").innerHTML).toContain("newer result")
+    const failed = b.poll()
+    await b.respond(b.requests[4]!, {}, 401)
+    await failed
+    expect(b.get("meta").textContent).toBe("connection lost")
+    expect(b.get("transcript").innerHTML).toContain("newer result")
+  })
+
+  test("polls the selected transcript without clearing or rewriting unchanged content", async () => {
+    const b = await browser()
+    b.click(0)
+    expect(b.requests[1]!.url).toBe("/api/session/ses_root00000001?token=test")
+    await b.respond(b.requests[1]!, b.transcript("first"))
+    const panel = b.get("transcript")
+    const writes = panel.writes
+    const polling = b.poll()
+    await b.respond(b.requests[2]!, webView(monitorState()))
+    expect(b.requests[3]!.url).toContain("/api/session/ses_root")
+    expect(panel.innerHTML).toContain("first")
+    expect(panel.writes).toBe(writes)
+    await b.respond(b.requests[3]!, b.transcript("first"))
+    await polling
+    expect(panel.writes).toBe(writes)
+    const next = b.poll()
+    await b.respond(b.requests[4]!, webView(monitorState()))
+    await b.respond(b.requests[5]!, b.transcript("updated <text>"))
+    await next
+    expect(panel.innerHTML).toContain("updated &lt;text&gt;")
+    const failed = b.poll()
+    await b.respond(b.requests[6]!, webView(monitorState()))
+    await b.respond(b.requests[7]!, {}, 500)
+    await failed
+    expect(panel.innerHTML).toContain("updated &lt;text&gt;")
+  })
+
+  test("ignores late responses across selections and overlapping same-session refreshes", async () => {
+    const b = await browser()
+    b.click(0)
+    b.click(1)
+    await b.respond(b.requests[2]!, b.transcript("busy"))
+    await b.respond(b.requests[1]!, b.transcript("stale root"))
+    expect(b.get("transcript").innerHTML).toContain("busy")
+    b.click(1)
+    b.click(1)
+    await b.respond(b.requests[4]!, b.transcript("newest"))
+    await b.respond(b.requests[3]!, b.transcript("older"))
+    expect(b.get("transcript").innerHTML).toContain("newest")
+    b.click(0)
+    b.click(1)
+    await b.respond(b.requests[6]!, b.transcript("returned"))
+    await b.respond(b.requests[5]!, {}, 500)
+    expect(b.get("transcript").innerHTML).toContain("returned")
+  })
+
+  test("ignores an earlier selection even after returning to the same session", async () => {
+    const b = await browser()
+    b.click(0)
+    b.click(1)
+    b.click(0)
+    await b.respond(b.requests[1]!, b.transcript("earlier visit"))
+    expect(b.get("transcript").textContent).toBe("loading...")
+    await b.respond(b.requests[3]!, b.transcript("current visit"))
+    await b.respond(b.requests[2]!, b.transcript("other session"))
+    expect(b.get("transcript").innerHTML).toContain("current visit")
   })
 })

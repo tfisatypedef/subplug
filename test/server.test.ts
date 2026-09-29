@@ -105,6 +105,8 @@ async function startPlugin(
     messages?: FakeMessages
     todos?: FakeTodos
     prompts?: FakePrompt[]
+    comms?: { enabled?: boolean; inject?: boolean }
+    onPromptAsync?: () => Promise<void>
   } = {},
 ): Promise<Hooks> {
   delete process.env.COORD_AGENT_ID
@@ -134,6 +136,7 @@ async function startPlugin(
         },
         promptAsync: async (request: FakePrompt) => {
           options.prompts?.push(request)
+          await options.onPromptAsync?.()
           return { data: undefined }
         },
       },
@@ -148,6 +151,7 @@ async function startPlugin(
   const pluginOptions: Record<string, unknown> = { coord: { injectIdentity: options.injectIdentity ?? true } }
   if (!options.stateFromClient) pluginOptions.storageDir = stateDir
   if (options.hubGroup) pluginOptions.hubGroup = options.hubGroup
+  if (options.comms) pluginOptions.comms = options.comms
   return serverModule.server(input, pluginOptions)
 }
 
@@ -646,6 +650,76 @@ describe("server plugin swarm_status detail", () => {
 })
 
 describe("server plugin swarm_send", () => {
+  test("reserves concurrent send slots before transport waits and releases failed slots", async () => {
+    const repo = tempDir("repo-")
+    const stateDir = tempDir("state-")
+    const prompts: FakePrompt[] = []
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let fail = false
+    const hooks = await startPlugin(repo, stateDir, {
+      sessions: [{ id: "ses_concurrent", directory: repo, time: { updated: Date.now() } }],
+      statuses: { ses_concurrent: { type: "idle" } }, prompts,
+      onPromptAsync: async () => { await gate; if (fail) throw new Error("transport failed") },
+    })
+    expect(await waitFor(() => hubEvents(stateDir).some((event) => event.sessionID === "ses_concurrent"))).toBe(true)
+    const tool = sendTool(hooks)
+    const pending = Array.from({ length: 8 }, (_, index) => tool.execute(
+      { session: "ses_concurrent", message: `message ${index}` },
+      { ...sender, directory: repo, worktree: repo },
+    ))
+    expect(await waitFor(() => prompts.length >= 5)).toBe(true)
+    expect(prompts).toHaveLength(5)
+    // All five admitted requests remain in flight at this point.
+    fail = true
+    release()
+    const failed = await Promise.all(pending)
+    expect(failed.filter((result) => result.output.includes("send cap reached"))).toHaveLength(3)
+    expect(failed.filter((result) => result.output.includes("transport failed"))).toHaveLength(5)
+    fail = false
+    const retry = await Promise.all(Array.from({ length: 8 }, () => tool.execute(
+      { session: "ses_concurrent", message: "retry" }, { ...sender, directory: repo, worktree: repo },
+    )))
+    expect(retry.filter((result) => result.output.startsWith("sent "))).toHaveLength(5)
+    expect(retry.filter((result) => result.output.includes("send cap reached"))).toHaveLength(3)
+    expect(hubEvents(stateDir).filter((event) => event.kind === "comms.sent")).toHaveLength(5)
+  })
+
+  test("delivery opt-out rejects sends and notices while injection-only opt-out permits sends", async () => {
+    for (const enabled of [false, true]) {
+      const repo = tempDir("repo-")
+      const stateDir = tempDir("state-")
+      const prompts: FakePrompt[] = []
+      const hooks = await startPlugin(repo, stateDir, {
+        comms: { enabled, inject: !enabled },
+        sessions: [{ id: "ses_optout", directory: repo, time: { updated: Date.now() } }],
+        statuses: { ses_optout: { type: "idle" } }, prompts,
+      })
+      expect(await waitFor(() => hubEvents(stateDir).some((event) => event.sessionID === "ses_optout"))).toBe(true)
+      const result = await sendTool(hooks).execute({ session: "ses_optout", message: "hello" }, { ...sender, directory: repo, worktree: repo })
+      expect(prompts).toHaveLength(enabled ? 1 : 0)
+      expect(result.output).toContain(enabled ? "sent " : "disabled")
+      new EventLog(hubRoot(stateDir, PROJECT_ID), "external").append({ ts: Date.now(), serverID: "external", kind: "comms.sent", sessionID: "ses_optout", refs: { msgID: "external-pointer", from: "other", to: "ses_optout" }, summary: "external notice" })
+      const output = { message: { id: "msg_1" }, parts: [] } as unknown as Parameters<NonNullable<Hooks["chat.message"]>>[1]
+      await hooks["chat.message"]?.({ sessionID: "ses_optout" }, output)
+      expect(output.parts).toHaveLength(0)
+    }
+  })
+
+  test("bootstrap recovers sender identity from rotated checkpoints", async () => {
+    const repo = tempDir("repo-")
+    const stateDir = tempDir("state-")
+    const now = Date.now()
+    const prior = new EventLog(hubRoot(stateDir, PROJECT_ID), "prior", 1)
+    prior.append({ ts: now - 100, serverID: "prior", kind: "session.created", sessionID: sender.sessionID })
+    prior.append({ ts: now - 90, serverID: "prior", kind: "session.identity", sessionID: sender.sessionID, refs: { identity: "sender@host/full-id" } })
+    for (let index = 0; index < 5; index += 1) prior.append({ ts: now - 80 + index, serverID: "prior", kind: "message", sessionID: sender.sessionID })
+    const hooks = await startPlugin(repo, stateDir, { sessions: [{ id: "ses_destination", directory: repo, time: { updated: now } }], statuses: { ses_destination: { type: "idle" } } })
+    expect(await waitFor(() => hubEvents(stateDir).some((event) => event.sessionID === "ses_destination"))).toBe(true)
+    await sendTool(hooks).execute({ session: "ses_destination", message: "hello" }, { ...sender, directory: repo, worktree: repo })
+    expect(hubEvents(stateDir).find((event) => event.kind === "comms.sent")?.refs?.from).toBe("sender@host/full-id")
+  })
+
   type SendExecutor = {
     execute: (
       args: Record<string, unknown>,

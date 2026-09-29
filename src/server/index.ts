@@ -4,7 +4,7 @@ import { tool } from "@opencode-ai/plugin"
 import type { Hooks, Plugin, PluginInput } from "@opencode-ai/plugin"
 import { categorizeCommand, summarizeCommand, summarizeError } from "../shared/redact.ts"
 import type { EventRecord, SessionNode } from "../shared/types.ts"
-import { EventLog, EventTail, readEventRecords } from "../hub/append.ts"
+import { EventLog, EventTail, readEventRecords, readSessionRecords } from "../hub/append.ts"
 import { applyRecord } from "../hub/fold.ts"
 import { agentIdentity } from "../hub/identity.ts"
 import { readMonitorState } from "../hub/monitor.ts"
@@ -31,6 +31,7 @@ type ShellRunner = (strings: TemplateStringsArray, ...expressions: unknown[]) =>
 type SubplugOptions = {
   injectIdentity: boolean
   injectComms: boolean
+  commsEnabled: boolean
   storageDir?: string
   hubGroup?: string
   retentionBytes?: number
@@ -105,6 +106,7 @@ function resolveOptions(options?: Record<string, unknown>): SubplugOptions {
   return {
     injectIdentity: toBool(coord.injectIdentity, toBool(root.injectIdentity, envInject)),
     injectComms: toBool(comms.inject, toBool(root.injectComms, true)),
+    commsEnabled: toBool(comms.enabled, true),
     storageDir: toStringValue(coord.storageDir) ?? toStringValue(root.storageDir) ?? envStorage,
     hubGroup:
       toStringValue(coord.hubGroup) ??
@@ -428,8 +430,11 @@ const server: Plugin = async (input, options) => {
       mkdirSync(dir, { recursive: true })
       const eventLog = new EventLog(dir, serverID, cfg.retentionBytes)
       commsTail.seed(dir)
+      for (const record of readSessionRecords(dir)) applyRecord(sessions, record)
+      for (const [id, session] of sessions) {
+        if (now() - session.lastEventAt > cfg.maxAgeMs) sessions.delete(id)
+      }
       for (const record of readEventRecords(dir, { maxAgeMs: cfg.maxAgeMs })) {
-        applyRecord(sessions, record)
         applyCommsRecord(comms, record)
       }
       hubDir = dir
@@ -505,7 +510,7 @@ const server: Plugin = async (input, options) => {
 
   const SEND_CAP = 5
   const SEND_CAP_WINDOW_MS = 60_000
-  const sendTimes = new Map<string, number[]>()
+  const sendTimes = new Map<string, Array<{ ts: number }>>()
   let syntheticPartCounter = 0
 
   const syntheticPartID = (): string => {
@@ -519,7 +524,7 @@ const server: Plugin = async (input, options) => {
     messageID: string | undefined,
     output: { message: { id: string }; parts: unknown[] },
   ): Promise<void> => {
-    if (!cfg.injectComms) return
+    if (!cfg.commsEnabled || !cfg.injectComms) return
     const { hubDir: dir } = await ensure()
     for (const record of commsTail.read(dir)) applyCommsRecord(comms, record)
     const pending = [...comms.values()]
@@ -982,6 +987,7 @@ const server: Plugin = async (input, options) => {
         },
         async execute(args, context) {
           const ref = (args.session ?? args.task_id ?? "").trim()
+          if (!cfg.commsEnabled) return { title: "subplug swarm_send", output: "session comms are disabled (comms.enabled:false)" }
           const text = args.message.trim()
           if (!ref || !text) {
             return {
@@ -1008,13 +1014,16 @@ const server: Plugin = async (input, options) => {
             return { title: "subplug swarm_send", output: "refusing to send a message to the calling session" }
           }
           const sender = context.sessionID
-          const recent = (sendTimes.get(sender) ?? []).filter((ts) => now() - ts < SEND_CAP_WINDOW_MS)
+          const recent = (sendTimes.get(sender) ?? []).filter((entry) => now() - entry.ts < SEND_CAP_WINDOW_MS)
           if (recent.length >= SEND_CAP) {
             return {
               title: "subplug swarm_send",
               output: `send cap reached (${SEND_CAP}/minute); wait before sending again`,
             }
           }
+          const reservation = { ts: now() }
+          recent.push(reservation)
+          sendTimes.set(sender, recent)
           let sent: Awaited<ReturnType<typeof sendFollowUp>>
           try {
             sent = await sendFollowUp({
@@ -1027,6 +1036,8 @@ const server: Plugin = async (input, options) => {
               record: append,
             })
           } catch (error) {
+            // Remove only this send's reservation; parallel successes retain theirs.
+            sendTimes.set(sender, (sendTimes.get(sender) ?? []).filter((entry) => entry !== reservation))
             if (error instanceof FollowUpConfirmationRequired) {
               return {
                 title: "subplug swarm_send",
@@ -1036,8 +1047,6 @@ const server: Plugin = async (input, options) => {
             }
             return { title: "subplug swarm_send", output: `send failed: ${followUpError(error)}` }
           }
-          recent.push(now())
-          sendTimes.set(sender, recent)
           return {
             title: "subplug swarm_send",
             output: `sent ${sent.msgID} to ${target.sessionID.slice(0, 12)} (${sent.status}, ${sent.noReply ? "queued" : "prompted"})`,

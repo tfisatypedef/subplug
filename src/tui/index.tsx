@@ -43,6 +43,7 @@ type Cfg = {
   sidebarAspect: number
   storageDir: string | undefined
   hubGroup: string | undefined
+  commsEnabled: boolean
 }
 
 const defaultKeymap: BindingConfig<Renderable, KeyEvent> = {
@@ -63,6 +64,7 @@ function record(value: unknown): value is Record<string, unknown> {
 
 function config(options: Record<string, unknown> | undefined): Cfg {
   const coord = record(options?.coord) ? options.coord : undefined
+  const comms = record(options?.comms) ? options.comms : undefined
   return {
     route: pick(options?.route, "subplug"),
     command: pick(options?.command, "subplug.open"),
@@ -71,6 +73,7 @@ function config(options: Record<string, unknown> | undefined): Cfg {
     sidebarAspect: num(options?.sidebarAspect, 0.5),
     storageDir: pick(options?.storageDir, "") || pick(coord?.storageDir, "") || process.env.SUBPLUG_STORAGE_DIR || undefined,
     hubGroup: pick(options?.hubGroup, "") || pick(coord?.hubGroup, "") || process.env.SUBPLUG_HUB_GROUP || undefined,
+    commsEnabled: comms?.enabled !== false && comms?.enabled !== "false" && comms?.enabled !== "0",
   }
 }
 
@@ -648,12 +651,13 @@ export function SessionDetail(props: {
   )
 }
 
-export function createFollowUpComposer(api: TuiPluginApi, state: () => MonitorState) {
+export function createFollowUpComposer(api: TuiPluginApi, state: () => MonitorState, enabled = true) {
   const { DialogConfirm, DialogPrompt } = api.ui
   const serverID = `subplug-tui-${randomUUID()}`
   let eventLog: EventLog | undefined
   const promptTarget = async (sessionID: string, text: string, confirm = false): Promise<void> => {
     try {
+      if (!enabled) throw new Error("session comms are disabled (comms.enabled:false)")
       const target = state().sessions.find((session) => session.sessionID === sessionID)
       if (!target) throw new Error("target session is no longer available")
       if (!state().hubDir) throw new Error("monitor is still loading; try again shortly")
@@ -708,6 +712,10 @@ export function createFollowUpComposer(api: TuiPluginApi, state: () => MonitorSt
   }
   return (sessionID: string, status: SessionNode["status"]): void => {
     if (!sessionID) return
+    if (!enabled) {
+      api.ui.toast({ variant: "error", title: "subplug", message: "session comms are disabled (comms.enabled:false)", duration: 3000 })
+      return
+    }
     const target = state().sessions.find((session) => session.sessionID === sessionID)
     api.ui.dialog.replace(
       () => (
@@ -790,7 +798,7 @@ const tui: TuiPlugin = async (api, options) => {
     closeDashboard()
   }
 
-  const compose = createFollowUpComposer(api, state)
+  const compose = createFollowUpComposer(api, state, cfg.commsEnabled)
 
   try {
     const markerDir = join(cfg.storageDir ?? api.state.path.state, "subplug")

@@ -85,11 +85,12 @@ Path plugins must default-export an object with `id` plus either `server` or
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `coord.injectIdentity` | always on | Accepted for compatibility. In coordination-enabled repos the server always sets `COORD_AGENT_ID` via `shell.env`: every session gets a distinct `<name>@<host>/<full session id>`, overriding inherited or already populated values (the base is cached per repository). |
-| `comms.inject` | `true` | Append pending inbox notices as one synthetic part on the recipient's next turn (strict no-op when the inbox is empty); `false` disables. |
+| `comms.enabled` | `true` | Enable addressed message delivery and inbox notices. Set `false` in both server and TUI plugin options to disable `swarm_send`, TUI follow-ups, and synthetic notices. |
+| `comms.inject` | `true` | Append pending inbox notices as one synthetic part on the recipient's next turn (strict no-op when the inbox is empty); `false` suppresses notices while explicit sends remain enabled. |
 | `storageDir` | opencode state dir | Override the hub root (also `SUBPLUG_STORAGE_DIR`). |
 | `hubGroup` | project id | Override the hub key so multiple clones/windows can share one hub (combine with a shared `storageDir`; also `SUBPLUG_HUB_GROUP`). Sanitized for the filesystem; degenerate values (`.`, `..`, empty) fall back to `unknown`. |
 | `retentionBytes` | 4 MiB | Rotate `events.<server>.jsonl` at this size (one `.1` segment kept). |
-| `maxAgeMs` | 24 h | Ignore records older than this when folding. |
+| `maxAgeMs` | 24 h | Hide sessions whose last activity is older than this; historical metadata is retained for recent sessions. This does not prune checkpoint files. |
 | `intervalMs` (TUI) | 1000 | Hub poll interval. |
 | `sidebarAspect` (TUI) | 0.5 | Fallback cell width/height ratio for the Agents panel when the terminal doesn't report pixel resolution (rows = `round(36 × aspect)`, clamped 11–24). |
 | `route` / `command` (TUI) | `subplug` / `subplug.open` | Dashboard route name and palette command. |
@@ -133,8 +134,13 @@ path plus both sides of a move. The denial is thrown from `tool.execute.before`,
 not swallowed by the monitoring catch. Shell commands that mutate files are not
 gated, and leases live in the per-worktree git directory, never in git.
 
-Hub layout: `<stateDir>/subplug/<hubKey>/events.<serverID>.jsonl` plus a folded
-`snapshot.json`, where `<hubKey>` is the project id unless `hubGroup` is set.
+Hub layout: `<stateDir>/subplug/<hubKey>/events.<serverID>.jsonl`, one rotated
+`.1` segment, and a writer-owned `.checkpoint` retaining compact session metadata
+before old rotated events are dropped. Checkpoints retain original field
+timestamps and last activity; readers replay checkpoints and logs in timestamp
+order rather than trusting the shared `snapshot.json`. Compact metadata currently
+remains on disk indefinitely; `maxAgeMs` filters display only. `<hubKey>` is the
+project id unless `hubGroup` is set.
 Multiple servers append to separate files and every reader folds all of them,
 so several opencode windows on the same project aggregate automatically. To
 aggregate different clones, point them at the same `storageDir` and set the same
@@ -240,11 +246,15 @@ by default; enable it in the plugin options:
 ```
 
 Open `http://127.0.0.1:7690` (append `?token=...` when a token is set). The
-page polls the folded hub once per second and shows sessions grouped by status,
+page polls the folded hub and selected transcript once per second and shows sessions with status filters,
 active claims with conflict flags, and a capped transcript for the selected
 session read through the flat client. It binds `127.0.0.1` only, serves GET
 only, and never writes; message bodies stay in the native session store, never
 in the hub.
+
+The browser view currently has status filters, claims/conflicts, and transcripts;
+subtree rollups and inbox panels remain deferred. Transcript refreshes preserve
+unchanged content and ignore responses from an earlier selection or older refresh.
 
 ## Development
 

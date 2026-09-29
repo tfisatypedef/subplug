@@ -153,7 +153,9 @@ subplug/
 - **P3 — coordination bridge.** Read `coordination/claims/*.jsonl` (fallback
   `coord.py list --json`); overlay claims/expiry/conflicts/needs-test; watch
   `tool.execute.before` bash for `git commit|push|coord` and toast warnings
-  (never gate). *Accept*: seeded registry shows claims, expiry countdown,
+  (coverage checks warn only). Edit tools separately enforce exact-path leases
+  in coordination-enabled repositories; monitoring remains read-only.
+  *Accept*: seeded registry shows claims, expiry countdown,
   conflict badge, commit-without-coverage warning.
 - **P4 — viewing subagents.** Tree rendering, live transcripts (full parts),
   rollups, `swarm_status` tree format, on-demand context/diff. Read-only.
@@ -194,8 +196,9 @@ subplug/
   replay; `chat.message` reads only that map after the memoized `ensure()`.
 - Cross-session content is untrusted input; frame as data, never inject via
   the system prompt by default.
-- Agent-to-agent loops and token burn: addressed-only, no auto-reply, hop
-  cap <= 2, per-session send caps.
+- Agent-to-agent loops and token burn: addressed-only, no auto-reply, and
+  per-session send caps. A hop cap <= 2 is deferred: current message pointers
+  expose no reliable causal chain for determining a reply's hop count.
 - Busy sends are confirmed (`swarm_send` refuses without `confirm: true`; the TUI
   composer asks first) and are consumed at the next step boundary.
 - ~~`comms.*` records must not flow through `fold.ts`'s default `ensure()` path.~~
@@ -256,9 +259,13 @@ Confirmed against opencode 1.18.32 with the dev harness (scratch
   sync store backing `api.state.session.*` (v1 `Message`/`Part`, global maps
   keyed by id) and a durable `session.next.*` store keyed by `sessionID`;
   neither is assumed for subplug, which reads the flat client.
-- Target policy: idle/background subagents and roots by default; busy targets
-  require an explicit confirm; in-flight synchronous children are refused with
-  an offer to promote them to background (`experimental.session.background`).
+- Target policy: roots and children are addressable; busy targets require
+  explicit confirmation. Refusing in-flight synchronous children and offering
+  background promotion is deferred: the exposed session metadata has no durable
+  synchronous/background flag, so the implementation cannot classify them reliably.
+- Delivery opt-out: `comms.enabled` defaults to true; false blocks explicit sends
+  and synthetic notices (configure both server and TUI). `comms.inject: false`
+  suppresses notices only and still permits explicit sends.
 
 ### Verified mechanics (opencode 1.18.32, binary inspection)
 
@@ -477,9 +484,10 @@ over the TUI. Read-only, localhost, opt-in; the hub stays metadata-only.
   re-renders; the TUI's `readMonitorState` fold is reused verbatim.
 - **Auth**: localhost-only by default; optional `token` query param when set.
   Never bind `0.0.0.0`; document the risk if someone does.
-- **UI**: status filter tabs and grouping from `src/tui/command-center.ts`
-  (pure helpers, reusable) rendered as HTML; claims/conflicts, rollups, inbox
-  pointers, and a transcript panel for the selected session. No composer, no
+- **UI**: status filter tabs using shared `src/shared/status.ts` metadata,
+  rendered as HTML; claims/conflicts and a transcript panel for the selected
+  session. Browser subtree rollups and inbox panels are deferred; these remain
+  TUI features. No composer, no
   writes, no attention sounds.
 - **Tests**: `Bun.serve` handler as a pure module (request -> response) so
   `bun test` can hit it with a seeded hub; assert GET-only, token gating,
@@ -489,7 +497,16 @@ over the TUI. Read-only, localhost, opt-in; the hub stays metadata-only.
 
 Acceptance: with `web.enabled: true`, `http://127.0.0.1:7690` shows the same
 sessions/claims/conflicts as the TUI dashboard, updates within ~1s, and serves
-no writes; all existing tests plus the web handler tests pass.
+no writes; handler and generated-browser-script tests cover polling, slow
+responses, selection races, unchanged content, and transient failures.
+
+Current retention: each writer compacts session metadata into its own
+`events.<serverID>.jsonl.checkpoint` before dropping a rotated segment. Readers
+replay checkpoints plus logs globally by original timestamp (rotated records
+before active records for ties), retaining old fields for recently active
+sessions. `maxAgeMs` filters by session last activity; compact checkpoint metadata
+currently persists indefinitely on disk. Shared `snapshot.json` is not trusted
+as replay input. Checkpoint disk pruning remains deferred.
 
 ## Edit-lease drill findings (2026-09-28)
 

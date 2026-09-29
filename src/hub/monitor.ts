@@ -1,6 +1,6 @@
 import type { ClaimRecord, EventRecord, MonitorState, RegistryState, RiskRecord, SessionNode } from "../shared/types.ts"
 import { buildRegistryState } from "../coord/claims.ts"
-import { readEventRecords } from "./append.ts"
+import { readEventRecords, readSessionRecords } from "./append.ts"
 import { foldComms } from "./comms.ts"
 import { foldSessions } from "./fold.ts"
 
@@ -54,11 +54,15 @@ export function readMonitorState(
   const now = options.now ?? Date.now()
   const maxAgeMs = options.maxAgeMs ?? DEFAULT_MAX_AGE_MS
   const records = readEventRecords(hubDir, { now, maxAgeMs })
+  // Age applies to a session's activity, not each field's provenance: an active
+  // child still needs yesterday's parent/title/identity after log rotation.
+  const sessions = foldSessions(readSessionRecords(hubDir))
+    .filter((session) => now - session.lastEventAt <= maxAgeMs)
   const registry = repoRoot ? buildRegistryState(repoRoot, now) : emptyRegistry()
   return {
     generatedAt: now,
     hubDir,
-    sessions: foldSessions(records),
+    sessions,
     risks: toRisks(records),
     recentCommands: records.filter((record) => record.kind === "command").slice(-MAX_COMMANDS),
     comms: foldComms(records).slice(-MAX_COMMS),
