@@ -1,6 +1,15 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process"
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
-import { hostname } from "node:os"
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs"
+import { homedir, hostname } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { readEventRecords, EventLog } from "../src/hub/append.ts"
@@ -27,6 +36,11 @@ const expectSubagent = process.argv.includes("--expect-subagent")
 const probeComms = process.argv.includes("--probe-comms")
 const probeTuiState = process.argv.includes("--probe-tui-state")
 const probeInject = process.argv.includes("--probe-inject")
+const probeTask = process.argv.includes("--probe-task")
+const modelArg = (() => {
+  const index = process.argv.indexOf("--model")
+  return index >= 0 ? process.argv[index + 1] : undefined
+})()
 const verbose = process.argv.includes("--verbose")
 
 const serverEntry = join(root, "src", "server", "index.ts").replace(/\\/g, "/")
@@ -489,6 +503,141 @@ async function probeJson(url: string): Promise<unknown> {
   return response.json()
 }
 
+function writeTaskConfig(): void {
+  mkdirSync(configDir, { recursive: true })
+  let provider: Record<string, unknown> = {}
+  try {
+    const parsed = JSON.parse(
+      readFileSync(join(homedir(), ".config", "opencode", "opencode.jsonc"), "utf8"),
+    ) as { provider?: Record<string, unknown> }
+    provider = parsed.provider ?? {}
+  } catch {
+    // fall back to built-in providers
+  }
+  writeFileSync(
+    join(configDir, "opencode.json"),
+    `${JSON.stringify(
+      {
+        $schema: "https://opencode.ai/config.json",
+        permission: {
+          bash: "allow",
+          edit: "allow",
+          external_directory: "allow",
+          webfetch: "deny",
+          question: "deny",
+        },
+        provider,
+        plugin: [[serverEntry, { coord: { injectIdentity: true }, storageDir: stateDir }]],
+      },
+      null,
+      2,
+    )}\n`,
+  )
+}
+
+function seedProbeAuth(): void {
+  const source = join(homedir(), ".local", "share", "opencode", "auth.json")
+  if (!existsSync(source)) return
+  const target = join(harnessDir, "xdg", "data", "opencode", "auth.json")
+  mkdirSync(dirname(target), { recursive: true })
+  copyFileSync(source, target)
+}
+
+async function runProbeTask(modelSpec: string): Promise<void> {
+  const slash = modelSpec.indexOf("/")
+  if (slash <= 0 || slash === modelSpec.length - 1) {
+    throw new Error(`--model must be <provider>/<modelID> (got ${JSON.stringify(modelSpec)})`)
+  }
+  const providerID = modelSpec.slice(0, slash)
+  const modelID = modelSpec.slice(slash + 1)
+
+  seedRepo()
+  writeTaskConfig()
+  rmSync(stateDir, { recursive: true, force: true })
+  seedProbeAuth()
+
+  const bin = resolveOpencodeBin()
+  killStaleServer()
+  const server = spawn(bin, ["serve", "--port", String(port), "--print-logs", "--log-level", "INFO"], {
+    cwd: repoDir,
+    env: harnessEnv({ SUBPLUG_SKIP_BASELINE: "1" }),
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+    detached: process.platform !== "win32",
+  })
+  let output = ""
+  server.stdout?.on("data", (chunk: Buffer) => {
+    output += chunk.toString()
+    if (verbose) process.stdout.write(chunk)
+  })
+  server.stderr?.on("data", (chunk: Buffer) => {
+    output += chunk.toString()
+    if (verbose) process.stderr.write(chunk)
+  })
+
+  try {
+    await waitForServer(120_000).catch((error) => {
+      process.stderr.write(output.slice(-4000))
+      throw error
+    })
+    const rootID = await createProbeSession({ title: "task probe root" })
+    log(`root ${rootID}; prompting ${modelSpec} (this spends model quota)`)
+    const prompt =
+      'Use the task tool to spawn exactly one subagent. Tell the subagent to run `node -p "process.env.COORD_AGENT_ID"` and report the output. After it finishes, reply with exactly DONE.'
+    const response = await fetch(`${base}/session/${rootID}/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: { providerID, modelID }, parts: [{ type: "text", text: prompt }] }),
+      signal: AbortSignal.timeout(240_000),
+    })
+    if (!response.ok) throw new Error(`prompt -> HTTP ${response.status}: ${await response.text()}`)
+
+    const deadline = Date.now() + 240_000
+    let completed = false
+    while (Date.now() < deadline) {
+      await sleep(2000)
+      const messages = (await probeJson(`${base}/session/${rootID}/message`)) as Array<{
+        info?: { role?: string; time?: { completed?: number } }
+      }>
+      const assistant = [...messages].reverse().find((message) => message.info?.role === "assistant")
+      if (assistant?.info?.time?.completed) {
+        completed = true
+        break
+      }
+    }
+    if (!completed) throw new Error("the task prompt did not complete within 240s")
+
+    let taskChild: { sessionID: string; parentID: string; agent: string; model?: string } | undefined
+    const hubDeadline = Date.now() + 15_000
+    while (Date.now() < hubDeadline && !taskChild) {
+      const dir = hubDirsByRecency()[0]
+      if (dir) {
+        const state = readMonitorState(dir, repoDir)
+        for (const session of state.sessions) {
+          log(
+            `  [${session.kind}] ${session.sessionID} parent=${session.parentID ?? "-"} agent=${session.agent ?? "-"} model=${session.model ?? "-"} status=${session.status}`,
+          )
+          if (!taskChild && session.kind === "subagent" && session.parentID === rootID && session.agent) {
+            taskChild = {
+              sessionID: session.sessionID,
+              parentID: session.parentID,
+              agent: session.agent,
+              model: session.model,
+            }
+          }
+        }
+      }
+      if (!taskChild) await sleep(1000)
+    }
+    if (!taskChild) throw new Error("no subagent with a recovered parent/agent pair was folded")
+    log(`PASS: task subagent ${taskChild.sessionID} parent=${taskChild.parentID} agent=${taskChild.agent} model=${taskChild.model ?? "-"}`)
+  } finally {
+    stop(server)
+    await sleep(500)
+    if (!keep) rmSync(harnessDir, { recursive: true, force: true })
+  }
+}
+
 async function runProbeComms(): Promise<void> {
   seedRepo()
   writeConfig()
@@ -943,6 +1092,20 @@ async function main(): Promise<void> {
   }
   if (probeInject) {
     await runProbeInject()
+    return
+  }
+  if (probeTask) {
+    if (!modelArg) {
+      log("--probe-task needs --model <provider>/<modelID> (e.g. orca/deepseek/deepseek-v4-flash-free)")
+      process.exit(1)
+    }
+    try {
+      await runProbeTask(modelArg)
+      log("task probe OK")
+    } catch (error) {
+      log(`FAILED: ${String(error)}`)
+      process.exit(1)
+    }
     return
   }
   await runSpike()

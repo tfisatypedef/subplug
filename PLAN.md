@@ -10,10 +10,11 @@ implemented**. Server tap, session fold, coord bridge, `swarm_status`
 command center (filter tabs, grouping, search, help, details pane) with
 Enter-to-switch, a store-backed transcript, session cost folding,
 the TUI composer/inbox, a timeout-guarded state-dir fallback, and a shared-hub
-`hubGroup` are in place. Publish prep is done (0.1.0, `files` whitelist,
-`prepublishOnly`, `bun run canary`); remaining: live `task`-subagent
-observation and visual TUI checks (see "Implementation status"), the optional
-web view, and the actual npm publish decision.
+`hubGroup` are in place, and a live `task` subagent is observed end to end by
+`--probe-task`. Publish prep is done (0.1.0, `files` whitelist,
+`prepublishOnly`, `bun run canary`); remaining: the interactive visual TUI
+checks (see "Implementation status"), the optional web view, and the actual
+npm publish decision.
 
 Follow-up context: the dashboard and detail offer `f`/`m` plus a clickable
 **[f] Follow up** action. TUI and tool sends share delivery logic: check live
@@ -418,7 +419,7 @@ logic; the harness only proves hooks fire and pointers land.
 | `swarm_status` session detail (`session`, opt-in `messages`) | done | `test/server.test.ts` (detail + message gating) |
 | TUI selection + `subplug.session` detail route | load-verified | TUI marker from `--tui`; visual check pending |
 | TUI sidebar/route/risk toast (SolidJS) | load-verified | TUI marker from `--tui`; `--demo` seed for visual check |
-| Real `task` subagent run | user-run | prompt + `--inspect --expect-subagent` documented in README; the assert exits non-zero unless a subagent with a recovered parent/agent pair is folded |
+| Real `task` subagent run | done | `--probe-task --model opencode/nemotron-3-ultra-free` starts a scratch server with the server plugin, prompts a model to spawn one subagent, folds the hub, and asserts the recovered `parent`/`agent`/`model` (verified live: child `agent=general`, `model=nemotron-3-ultra-free`); the probe copies auth into the isolated XDG data dir and merges the user's provider block, so no real hub is touched. Manual prompt + `--inspect --expect-subagent` also documented in README |
 | Visual TUI + toast/attention behavior | user-run | `--demo` + `--poke-risk` documented in README |
 | Harness robustness (random port, stale kill, retry, XDG isolation) | done | baseline spike stable; zombie cause documented |
 | Probe: busy-session admission + v1/v2 store split | done | `--probe-comms` (see results) |

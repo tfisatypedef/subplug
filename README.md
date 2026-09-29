@@ -292,7 +292,19 @@ conflict, and a stale risk. In the TUI:
 
 ### Real `task` subagent check
 
-With the TUI (or `opencode` in general) open in `.harness/repo`, prompt:
+Automated probe (spends model quota; a free Zen model works):
+
+```sh
+bun run scripts/dev-harness.ts --probe-task --model opencode/nemotron-3-ultra-free
+```
+
+It starts a scratch server with the server plugin, asks the model to spawn
+exactly one subagent, polls until the turn completes, then folds the hub and
+prints `PASS` with the recovered parent/agent/model. It uses an isolated state
+dir and copies your auth file, so nothing lands in your real hub.
+
+Manual check: with the TUI (or `opencode` in general) open in `.harness/repo`,
+prompt:
 
 > Spawn exactly one subagent with the task tool. Ask it to run
 > `node -p "process.env.COORD_AGENT_ID"` and report the output.
