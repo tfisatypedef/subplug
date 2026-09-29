@@ -445,6 +445,38 @@ Four review findings fixed post-P6, one per commit (baseline 80 tests):
 | Global record limit | `readEventRecords` keeps the globally newest `maxRecords` across all files with a bounded `(ts, seq)` min-heap instead of stopping in lexical file order; `maxRecords: 0` returns `[]`. | `test/hub.test.ts` cross-file limit + tie tests |
 | Stale comms fold | `EventTail` seeds byte-offset/identity cursors per hub file before the initial replay and reads only new bytes on `chat.message`; rotation/shrink resets, partial lines are held, `msgID` dedupe makes re-reads idempotent. | `test/hub.test.ts` EventTail tests; `test/server.test.ts` post-bootstrap pointer injection; `--probe-inject` |
 
+## P6 web view — proposal (not started)
+
+Goal: the command center in a browser for people who prefer a second monitor
+over the TUI. Read-only, localhost, opt-in; the hub stays metadata-only.
+
+- **Where it runs**: inside the **server plugin** (it already has the flat
+  client and the folded hub; works with or without a TUI window). New option
+  `web: { enabled: false, port: 7690, token?: string }`; `enabled: false` by
+  default so nothing listens unless asked.
+- **Transport**: `Bun.serve` on `127.0.0.1` only. `GET /` serves one static
+  HTML+inline-JS page (no build step, no framework); `GET /api/state` returns
+  the folded `MonitorState` (already redacted); `GET /api/session/:id` returns
+  the transcript via the flat client, capped like the TUI's preview. No
+  non-GET methods, no CORS headers.
+- **Freshness**: the page polls `/api/state` at `intervalMs` (default 1s) and
+  re-renders; the TUI's `readMonitorState` fold is reused verbatim.
+- **Auth**: localhost-only by default; optional `token` query param when set.
+  Never bind `0.0.0.0`; document the risk if someone does.
+- **UI**: status filter tabs and grouping from `src/tui/command-center.ts`
+  (pure helpers, reusable) rendered as HTML; claims/conflicts, rollups, inbox
+  pointers, and a transcript panel for the selected session. No composer, no
+  writes, no attention sounds.
+- **Tests**: `Bun.serve` handler as a pure module (request -> response) so
+  `bun test` can hit it with a seeded hub; assert GET-only, token gating,
+  transcript caps, and no message bodies from the hub.
+- **Out of scope**: remote access, multi-project aggregation (use `hubGroup`),
+  web comms, websockets/SSE (revisit only if 1s polling proves too slow).
+
+Acceptance: with `web.enabled: true`, `http://127.0.0.1:7690` shows the same
+sessions/claims/conflicts as the TUI dashboard, updates within ~1s, and serves
+no writes; all existing tests plus the web handler tests pass.
+
 ## Edit-lease drill findings (2026-09-28)
 
 The live blocked-edit acceptance was driven headlessly with a persistent
