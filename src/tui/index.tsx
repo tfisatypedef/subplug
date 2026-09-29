@@ -3,8 +3,9 @@ import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { randomUUID } from "node:crypto"
 import pkg from "../../package.json"
-import type { KeyEvent, RGBA, Renderable } from "@opentui/core"
+import type { KeyEvent, RGBA, Renderable, TextRenderable } from "@opentui/core"
 import { createBindingLookup, type BindingConfig } from "@opentui/keymap/extras"
+import type { JSX } from "@opentui/solid"
 import { createEffect, createSignal, onCleanup } from "solid-js"
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule, TuiSlotPlugin } from "@opencode-ai/plugin/tui"
 import type { MonitorState, SessionNode } from "../shared/types.ts"
@@ -17,7 +18,17 @@ import type { TranscriptRow } from "../shared/transcript.ts"
 import { hubRoot } from "../hub/paths.ts"
 import { findRepoRoot } from "../coord/repo.ts"
 import { Dashboard } from "./dashboard.tsx"
-import { age, rollupDetail, sessionLabel, shortID, skinOf, statusColor, statusMark, type Skin } from "./presentation.ts"
+import {
+  age,
+  createMarquee,
+  rollupDetail,
+  sessionLabel,
+  shortID,
+  skinOf,
+  statusColor,
+  statusMark,
+  type Skin,
+} from "./presentation.ts"
 import { loadSessionDetail, type SessionDetailState } from "./transcript.ts"
 import { createSessionNavigator } from "./navigation.ts"
 
@@ -213,9 +224,25 @@ const SIDEBAR_MIN_ROWS = 11
 const SIDEBAR_MAX_ROWS = 24
 const SIDEBAR_DEFAULT_ASPECT = 0.5
 
-function ellipsize(value: string, width: number): string {
-  if (value.length <= width) return value
-  return width <= 1 ? value.slice(0, width) : `${value.slice(0, width - 1)}…`
+function MarqueeRow(props: { width: number; fg: RGBA | string; children: JSX.Element }) {
+  let ref: TextRenderable | undefined
+  const marquee = createMarquee(() => ref)
+  onCleanup(() => marquee.stop())
+  return (
+    <text
+      flexShrink={0}
+      width={props.width}
+      wrapMode="none"
+      fg={props.fg}
+      ref={(el) => {
+        ref = el
+      }}
+      onMouseOver={() => marquee.start()}
+      onMouseOut={() => marquee.stop()}
+    >
+      {props.children}
+    </text>
+  )
 }
 
 export function Sidebar(props: {
@@ -273,13 +300,13 @@ export function Sidebar(props: {
         const current = session.sessionID === props.sessionID
         const prefix = current ? "▸ " : "  "
         const kind = session.kind === "subagent" ? "└ " : ""
-        const labelWidth = Math.max(4, inner() - prefix.length - 2 - kind.length)
+        const label = session.title?.trim() || session.sessionID.slice(0, 12)
         return (
-          <text flexShrink={0} width={inner()} wrapMode="none" truncate fg={current ? skin().text : skin().muted}>
+          <MarqueeRow width={inner()} fg={current ? skin().text : skin().muted}>
             <span style={{ fg: current ? skin().accent : skin().muted }}>{prefix}</span>
             <span style={{ fg: statusColor(skin(), session.status) }}>{statusMark(session.status)}</span>
-            {` ${kind}${ellipsize(sessionLabel(session), labelWidth)}`}
-          </text>
+            {` ${kind}${label}`}
+          </MarqueeRow>
         )
       })}
       <text flexShrink={0} width={inner()} wrapMode="none" truncate fg={skin().muted}>

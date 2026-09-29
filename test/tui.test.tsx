@@ -376,6 +376,27 @@ describe("subplug TUI layout", () => {
     expect(await heightOf(0.9)).toBe(24)
   })
 
+  test("hovering a truncated sidebar row marquees its title", async () => {
+    const title = "a session title that is far too long for the square panel"
+    const state: MonitorState = {
+      ...monitorState(),
+      sessions: [session({ sessionID: "ses_root00000001", title })],
+    }
+    const setup = await testRender(
+      () => (
+        <Sidebar api={stubApi(42, 40)} state={() => state} sessionID="ses_other0000001" onOpen={() => undefined} />
+      ),
+      { width: 42, height: 40 },
+    )
+    await setup.flush()
+    const before = setup.captureCharFrame()
+    await setup.mockMouse.moveTo(5, 2)
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).not.toBe(before)
+    setup.renderer.destroy()
+  })
+
   test("details mark joined claims and color conflicting claims", async () => {
     const node = session({ sessionID: "ses_owner0000001", identity: "agent" })
     const state: MonitorState = {

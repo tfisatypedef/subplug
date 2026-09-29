@@ -164,9 +164,9 @@ the request.
   square panel — 36 cells wide, height derived from the terminal's cell aspect
   (pixel resolution when the terminal reports it, otherwise `sidebarAspect`)
   and clamped to 11–24 rows — themed with the active opencode theme, listing
-  the last 5 sessions with single-line truncated titles, status marks, the
-  current session marker, and the active-claim count. Clicking it opens the
-  command center.
+  the last 5 sessions with single-line titles that marquee on hover when they
+  overflow, status marks, the current session marker, and the active-claim
+  count. Clicking it opens the command center.
 - Dashboard route `subplug` — a codex-style **command center**: status filter
   tabs (`All / Needs you / Working / Ready / Inactive` with counts), grouping by
   Project / Status / Agent / Hierarchy (default Project; Hierarchy keeps the
