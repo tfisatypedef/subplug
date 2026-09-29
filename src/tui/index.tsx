@@ -396,13 +396,20 @@ export function SessionDetail(props: {
 
   const refresh = async () => {
     try {
-      setDetail(await loadSessionDetailV2(props.ctx, props.sessionID()))
+      const sessionID = props.sessionID()
+      const next = await loadSessionDetailV2(props.ctx, sessionID)
+      if (!disposed && sessionID === props.sessionID()) setDetail(next)
     } catch {
       // detail refresh is best-effort
     }
   }
+  let disposed = false
   void refresh()
   const timer = setInterval(() => void refresh(), Math.max(500, props.intervalMs))
+  onCleanup(() => {
+    disposed = true
+    clearInterval(timer)
+  })
 
   const usage = () => {
     const value = detail()

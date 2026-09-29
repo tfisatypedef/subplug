@@ -6,7 +6,9 @@ export const REMOTE_SERVER_ID = "remote"
 
 /** `data.session.status` only reports idle/running; the hub has more states. */
 function remoteStatus(value: "idle" | "running" | undefined): SessionStatus {
-  return value === "running" ? "busy" : "idle"
+  if (value === "running") return "busy"
+  if (value === "idle") return "idle"
+  return "unknown"
 }
 
 /**

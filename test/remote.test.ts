@@ -77,6 +77,7 @@ describe("remote url heuristic", () => {
     expect(urlsIndicateRemote([], LOCAL)).toBeUndefined()
     expect(urlsIndicateRemote(["http://127.0.0.1:4096"], LOCAL)).toBe(false)
     expect(urlsIndicateRemote(["http://192.168.1.10:4096"], LOCAL)).toBe(false)
+    expect(urlsIndicateRemote(["http://[::1]:4096"], LOCAL)).toBe(false)
     expect(urlsIndicateRemote(["http://10.0.0.5:4096"], LOCAL)).toBe(true)
     expect(urlsIndicateRemote(["http://10.0.0.5:4096", "http://192.168.1.10:4096"], LOCAL)).toBe(false)
     expect(urlsIndicateRemote(["not a url"], LOCAL)).toBe(true)
@@ -149,6 +150,13 @@ describe("remote state mapping", () => {
     const nodes = mapRemoteSessions([{ id: "ses_a", cost: 1.25 }], { status: () => "idle" }, 42)
     expect(nodes[0]?.cost).toBe(1.25)
     expect(nodes[0]?.lastEventAt).toBe(42)
+  })
+
+  test("keeps status unknown when the remote status lookup fails", () => {
+    const nodes = mapRemoteSessions([{ id: "ses_a" }], {
+      status: () => { throw new Error("unavailable") },
+    })
+    expect(nodes[0]?.status).toBe("unknown")
   })
 })
 

@@ -41,7 +41,9 @@ export function urlsIndicateRemote(urls: readonly string[], localHosts: Readonly
   if (!urls.length) return undefined
   return urls.every((url) => {
     try {
-      return !localHosts.has(new URL(url).hostname)
+      const hostname = new URL(url).hostname
+      const host = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname
+      return !localHosts.has(host)
     } catch {
       return true
     }

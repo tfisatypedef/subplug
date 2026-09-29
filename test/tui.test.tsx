@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { RGBA, TextRenderable } from "@opentui/core"
 import { testRender, type JSX } from "@opentui/solid"
+import { createSignal } from "solid-js"
 import { createFollowUpComposer, Dashboard, SessionDetail, Sidebar, transcriptLine, type Skin } from "../src/tui/index.tsx"
 import { DetailsPane } from "../src/tui/details-pane.tsx"
 import { createSessionNavigator } from "../src/tui/navigation.ts"
@@ -313,6 +314,56 @@ describe("subplug TUI layout", () => {
     const todos = lines.find((line) => line.includes("Todos ("))
     expect(todos?.trimEnd().endsWith("│")).toBe(true)
     setup.renderer.destroy()
+  })
+
+  test("session detail ignores stale and disposed transcript loads and stops polling after close", async () => {
+    const stub = stubCtx()
+    const [selected, setSelected] = createSignal("ses_root00000001")
+    const pending: Array<{ sessionID: string; resolve: (value: unknown) => void }> = []
+    stub.ctx.client.session.context = ({ sessionID }) =>
+      new Promise((resolve) => pending.push({ sessionID, resolve }))
+    const setup = await renderHosted(() => (
+      <SessionDetail
+        ctx={stub.ctx}
+        state={monitorState}
+        sessionID={selected}
+        trail={() => [selected()]}
+        descend={() => undefined}
+        back={() => undefined}
+        compose={() => undefined}
+        intervalMs={500}
+      />
+    ))
+    const waitFor = async (predicate: () => boolean) => {
+      const deadline = Date.now() + 2000
+      while (!predicate() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5))
+      expect(predicate()).toBe(true)
+    }
+    try {
+      await waitFor(() => pending.some((request) => request.sessionID === "ses_root00000001"))
+      setSelected("ses_child0000001")
+      await waitFor(() => pending.some((request) => request.sessionID === "ses_child0000001"))
+      const childLoad = pending.find((request) => request.sessionID === "ses_child0000001")!
+      childLoad.resolve({ data: [{ type: "user", text: "CURRENT_CHILD_TRANSCRIPT" }] })
+      await waitFor(() => setup.captureCharFrame().includes("CURRENT_CHILD_TRANSCRIPT"))
+
+      const rootLoad = pending.find((request) => request.sessionID === "ses_root00000001")!
+      rootLoad.resolve({ data: [{ type: "user", text: "STALE_ROOT_TRANSCRIPT" }] })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await setup.flush()
+      expect(setup.captureCharFrame()).toContain("CURRENT_CHILD_TRANSCRIPT")
+      expect(setup.captureCharFrame()).not.toContain("STALE_ROOT_TRANSCRIPT")
+
+      await waitFor(() => pending.length >= 3)
+      const disposedLoad = pending[2]!
+      const callsAtClose = pending.length
+      setup.renderer.destroy()
+      disposedLoad.resolve({ data: [{ type: "user", text: "LATE_DISPOSED_TRANSCRIPT" }] })
+      await new Promise((resolve) => setTimeout(resolve, 550))
+      expect(pending.length).toBe(callsAtClose)
+    } finally {
+      setup.renderer.destroy()
+    }
   })
 
   test("a narrow terminal hides the details pane and keeps rows on one line", async () => {
@@ -689,12 +740,13 @@ describe("TUI command center keys", () => {
 })
 
 describe("TUI follow-up composer", () => {
-  function setup(status: "idle" | "busy", fail = false) {
+  function setup(status: "idle" | "busy" | "unknown", fail = false, remote = false) {
     const hubDir = mkdtempSync(join(tmpdir(), "subplug-tui-follow-up-"))
     followUpDirs.push(hubDir)
     const state = {
       ...monitorState(),
-      hubDir,
+      hubDir: remote ? "" : hubDir,
+      source: remote ? "remote" as const : "hub" as const,
       sessions: [
         session({ sessionID: "ses_child0000001", title: "child session", kind: "subagent", parentID: "ses_root00000001", status }),
       ],
@@ -762,5 +814,28 @@ describe("TUI follow-up composer", () => {
     expect(harness.stub.toasts[0]?.variant).toBe("error")
     expect(harness.stub.toasts[0]?.message).toContain("NotFoundError")
     expect(readEventRecords(harness.hubDir)).toHaveLength(0)
+  })
+
+  test("unknown remote status requires confirmation, queues once, and never writes a local pointer", async () => {
+    const cancelled = setup("unknown", false, true)
+    cancelled.stub.queuePrompt("Remote follow-up")
+    cancelled.stub.queueConfirm(false)
+    await cancelled.compose("ses_child0000001", "unknown")
+    expect(cancelled.stub.dialogConfirms).toHaveLength(1)
+    expect(cancelled.stub.promptCalls).toHaveLength(0)
+    expect(readEventRecords(cancelled.hubDir)).toHaveLength(0)
+
+    const confirmed = setup("unknown", false, true)
+    confirmed.stub.queuePrompt("Remote follow-up")
+    confirmed.stub.queueConfirm(true)
+    await confirmed.compose("ses_child0000001", "unknown")
+    await confirmed.waitFor(() => confirmed.stub.toasts.length > 0)
+    expect(confirmed.stub.dialogConfirms).toHaveLength(1)
+    expect(confirmed.stub.promptCalls).toEqual([{
+      sessionID: "ses_child0000001",
+      text: "Remote follow-up",
+      delivery: "queue",
+    }])
+    expect(readEventRecords(confirmed.hubDir)).toHaveLength(0)
   })
 })
