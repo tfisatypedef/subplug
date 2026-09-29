@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { SessionNode } from "../src/shared/types.ts"
 import {
   buildCenterRows,
+  centerState,
   clampWindow,
   filterCounts,
   GROUPINGS,
@@ -49,7 +50,7 @@ describe("command center status groups", () => {
       session({ sessionID: "d", status: "idle", deleted: true }),
     ]
     expect(filterCounts(sessions)).toEqual([4, 1, 1, 1, 1])
-    expect(filterCounts(sessions, new Set(["b"]))).toEqual([4, 2, 0, 1, 1])
+    expect(filterCounts(sessions, centerState(sessions, (id) => id === "b"))).toEqual([4, 2, 0, 1, 1])
   })
 
   test("grouping cycles through every mode", () => {
@@ -108,7 +109,7 @@ describe("command center rows", () => {
       filter: null,
       search: "",
       grouping: "hierarchy",
-      collapsed: new Set(["root"]),
+      state: centerState(sessions, () => false, new Set(["root"])),
     })
     const root = collapsed.tasks.find((task) => task.session.sessionID === "root")
     expect(collapsed.tasks.some((task) => task.session.sessionID === "child")).toBe(false)

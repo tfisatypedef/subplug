@@ -162,14 +162,20 @@ the request.
   nested parent/child tree and its collapse state in the TUI KV store), and rows
   with a selection caret, status dot, title, status column, and age. A right-hand
   details pane (terminals ≥ 90 columns) shows the selected session's id,
-  directory, agent, model, identity, subtree rollup, joined claims, pending
-  inbox, last command, and a short transcript preview. Open with the `/subplug`
+  directory, agent, model, identity, subtree rollup, joined claims (`⇄` plus
+  session id, with conflicting claims and their reasons in red), pending
+  inbox, last command, and a short transcript preview. The header summarizes
+  active claims and conflicts; click tabs to filter or rows to select the
+  highlighted session. Open with the `/subplug`
   command or `ctrl+alt+a`. `↑`/`↓` selects, `pgup`/`pgdn` page, `home`/`end`
   jump, `tab`/`shift+tab` cycles the filter, `g` cycles grouping, `/` opens a
-  searchable session picker, `?` toggles help, `←`/`→` collapse/expand in
-  Hierarchy, and Enter opens the selected session: it switches opencode to that
-  session when it belongs to this instance, otherwise it opens the in-plugin
-  `subplug.session` detail. `esc`/`q` returns to the view you came from.
+  search prompt whose confirmed query filters the list by title, id, agent,
+  or directory. `?`/`h` toggles help, and `←`/`→`/space collapse/expand only in
+  Hierarchy. Enter opens the selected session: it switches opencode when the
+  host knows the session, including empty sessions omitted from the sync store;
+  a host-client 404 opens the in-plugin `subplug.session` detail. Lookup failures
+  show an error toast. `esc`/`q` first closes help or clears an active search,
+  then returns to the view you came from.
 - Detail route `subplug.session`: breadcrumb, metadata, subtree rollup, todos,
   selectable subagents (Enter descends; `esc` pops back), joined claims, a
   pending **Inbox** panel, and a store-backed live transcript with full parts:

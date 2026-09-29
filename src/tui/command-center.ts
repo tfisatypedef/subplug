@@ -1,7 +1,22 @@
 import type { SessionNode } from "../shared/types.ts"
 import { buildSessionTree, flattenTree } from "../hub/tree.ts"
 
-export type StatusGroup = "needs" | "working" | "ready" | "inactive"
+export const STATUS_GROUPS = {
+  needs: { label: "Needs input", filter: "Needs you", mark: "●", color: "error", order: 0 },
+  working: { label: "Working", filter: "Working", mark: "●", color: "success", order: 1 },
+  ready: { label: "Ready", filter: "Ready", mark: "○", color: "accent", order: 2 },
+  inactive: { label: "Inactive", filter: "Inactive", mark: "○", color: "muted", order: 3 },
+} as const
+
+export type StatusGroup = keyof typeof STATUS_GROUPS
+
+export const SESSION_STATUS = {
+  error: { group: "needs", mark: "✖", color: "error" },
+  busy: { group: "working", mark: "●", color: "success" },
+  retry: { group: "working", mark: "◌", color: "warning" },
+  idle: { group: "ready", mark: "○", color: "muted" },
+  unknown: { group: "inactive", mark: "·", color: "muted" },
+} as const satisfies Record<SessionNode["status"], { group: StatusGroup; mark: string; color: string }>
 
 export type TaskFilter = {
   label: string
@@ -10,58 +25,54 @@ export type TaskFilter = {
 
 export const TASK_FILTERS: readonly TaskFilter[] = [
   { label: "All", group: null },
-  { label: "Needs you", group: "needs" },
-  { label: "Working", group: "working" },
-  { label: "Ready", group: "ready" },
-  { label: "Inactive", group: "inactive" },
+  ...Object.entries(STATUS_GROUPS).map(([group, value]) => ({ label: value.filter, group: group as StatusGroup })),
 ]
-
-const GROUP_ORDER: Record<StatusGroup, number> = { needs: 0, working: 1, ready: 2, inactive: 3 }
 
 export function statusGroup(session: SessionNode, needsInput = false): StatusGroup {
   if (needsInput) return "needs"
   if (session.deleted) return "inactive"
-  switch (session.status) {
-    case "error":
-      return "needs"
-    case "busy":
-    case "retry":
-      return "working"
-    case "idle":
-      return "ready"
-    default:
-      return "inactive"
-  }
+  return SESSION_STATUS[session.status].group
 }
 
 export function statusGroupLabel(group: StatusGroup): string {
-  switch (group) {
-    case "needs":
-      return "Needs input"
-    case "working":
-      return "Working"
-    case "ready":
-      return "Ready"
-    case "inactive":
-      return "Inactive"
+  return STATUS_GROUPS[group].label
+}
+
+export type CenterState = {
+  groups: ReadonlyMap<string, StatusGroup>
+  collapsed: ReadonlySet<string>
+}
+
+export function centerState(
+  sessions: readonly SessionNode[],
+  needs: (sessionID: string) => boolean = () => false,
+  collapsed: ReadonlySet<string> = new Set(),
+): CenterState {
+  return {
+    groups: new Map(sessions.map((session) => [session.sessionID, statusGroup(session, needs(session.sessionID))])),
+    collapsed,
   }
+}
+
+function groupFor(session: SessionNode, state: CenterState): StatusGroup {
+  return state.groups.get(session.sessionID) ?? statusGroup(session)
 }
 
 export function filterCounts(
   sessions: readonly SessionNode[],
-  needsInput: ReadonlySet<string> = new Set(),
+  state: CenterState = centerState(sessions),
 ): number[] {
   return TASK_FILTERS.map((filter) =>
     filter.group === null
       ? sessions.length
-      : sessions.filter((session) => statusGroup(session, needsInput.has(session.sessionID)) === filter.group)
+      : sessions.filter((session) => groupFor(session, state) === filter.group)
           .length,
   )
 }
 
-export type Grouping = "project" | "status" | "agent" | "hierarchy"
+export const GROUPINGS = ["project", "status", "agent", "hierarchy"] as const
 
-export const GROUPINGS: readonly Grouping[] = ["project", "status", "agent", "hierarchy"]
+export type Grouping = (typeof GROUPINGS)[number]
 
 export function groupingLabel(grouping: Grouping): string {
   return grouping.charAt(0).toUpperCase() + grouping.slice(1)
@@ -78,6 +89,7 @@ export function isGrouping(value: unknown): value is Grouping {
 
 export type TaskRow = {
   session: SessionNode
+  group: StatusGroup
   depth: number
   orphan: boolean
   hasChildren: boolean
@@ -98,8 +110,7 @@ export type BuildCenterOptions = {
   filter: StatusGroup | null
   search: string
   grouping: Grouping
-  collapsed?: ReadonlySet<string>
-  needsInput?: ReadonlySet<string>
+  state?: CenterState
 }
 
 function recencyDesc(a: SessionNode, b: SessionNode): number {
@@ -121,19 +132,20 @@ export function buildCenterRows(
   sessions: readonly SessionNode[],
   options: BuildCenterOptions,
 ): CenterRows {
-  const needs = options.needsInput ?? new Set<string>()
+  const state = options.state ?? centerState(sessions)
   const search = options.search.trim().toLowerCase()
   const filtered = sessions.filter((session) => {
-    if (options.filter !== null && statusGroup(session, needs.has(session.sessionID)) !== options.filter) return false
+    if (options.filter !== null && groupFor(session, state) !== options.filter) return false
     if (!search) return true
     return searchable(session).includes(search)
   })
 
   if (options.grouping === "hierarchy") {
     const tree = buildSessionTree([...filtered])
-    const flat = flattenTree(tree, options.collapsed ?? new Set())
+    const flat = flattenTree(tree, state.collapsed)
     const tasks: TaskRow[] = flat.map((row) => ({
       session: row.session,
+      group: groupFor(row.session, state),
       depth: row.depth,
       orphan: row.orphan,
       hasChildren: row.hasChildren,
@@ -152,8 +164,8 @@ export function buildCenterRows(
       const key = session.agent ?? "(no agent)"
       return { key, label: key, sort: key, tasks: [] }
     }
-    const group = statusGroup(session, needs.has(session.sessionID))
-    return { key: group, label: statusGroupLabel(group), sort: GROUP_ORDER[group], tasks: [] }
+    const group = groupFor(session, state)
+    return { key: group, label: statusGroupLabel(group), sort: STATUS_GROUPS[group].order, tasks: [] }
   }
   for (const session of filtered) {
     const bucket = bucketFor(session)
@@ -177,7 +189,14 @@ export function buildCenterRows(
     if (index > 0) rows.push({ kind: "gap", key: `gap:${bucket.key}` })
     rows.push({ kind: "group", key: `group:${bucket.key}`, label: bucket.label, count: bucket.tasks.length })
     for (const session of [...bucket.tasks].sort(recencyDesc)) {
-      const task: TaskRow = { session, depth: 0, orphan: false, hasChildren: false, collapsed: false }
+      const task: TaskRow = {
+        session,
+        group: groupFor(session, state),
+        depth: 0,
+        orphan: false,
+        hasChildren: false,
+        collapsed: false,
+      }
       tasks.push(task)
       rows.push({ kind: "task", task })
     }

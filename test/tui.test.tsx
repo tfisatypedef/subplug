@@ -3,15 +3,19 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { RGBA, TextRenderable } from "@opentui/core"
 import { testRender, type JSX } from "@opentui/solid"
 import { registerEnabledFields } from "@opentui/keymap/addons"
 import { createTestKeymap } from "@opentui/keymap/testing"
+import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import type { TuiDialogConfirmProps, TuiDialogPromptProps, TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { createFollowUpComposer, Dashboard, SessionDetail, Sidebar, transcriptLine, type Skin } from "../src/tui/index.tsx"
 import { readEventRecords } from "../src/hub/append.ts"
 import type { FollowUpRequest } from "../src/shared/follow-up.ts"
 import type { MonitorState, SessionNode } from "../src/shared/types.ts"
 import type { TranscriptRow } from "../src/shared/transcript.ts"
+import { createSessionNavigator } from "../src/tui/navigation.ts"
+import { DetailsPane } from "../src/tui/details-pane.tsx"
 
 const WIDTH = 100
 const HEIGHT = 30
@@ -113,8 +117,6 @@ describe("subplug TUI layout", () => {
       <Dashboard
         api={stubApi(WIDTH, HEIGHT)}
         state={monitorState}
-        route="subplug"
-        command="subplug.open"
         onClose={() => undefined}
         openSession={() => undefined}
         compose={() => undefined}
@@ -137,6 +139,23 @@ describe("subplug TUI layout", () => {
     expect(columns).toBeDefined()
     expect(lines.some((line) => line.includes("Task details"))).toBe(true)
     expect(lines.some((line) => line.includes("root session"))).toBe(true)
+    setup.renderer.destroy()
+  })
+
+  test("marks the session the dashboard was opened from as current", async () => {
+    const setup = await renderHosted(() => (
+      <Dashboard
+        api={stubApi(WIDTH, HEIGHT)}
+        state={monitorState}
+        currentSession={() => "ses_child0000001"}
+        onClose={() => undefined}
+        openSession={() => undefined}
+        compose={() => undefined}
+      />
+    ))
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("• child session")
+    expect(frame).toContain("· current")
     setup.renderer.destroy()
   })
 
@@ -184,8 +203,6 @@ describe("subplug TUI layout", () => {
         <Dashboard
           api={stubApi(60, 14)}
           state={() => state}
-          route="subplug"
-          command="subplug.open"
           onClose={() => undefined}
           openSession={() => undefined}
           compose={() => undefined}
@@ -251,9 +268,205 @@ describe("subplug TUI layout", () => {
     expect(opened).toBe(1)
     setup.renderer.destroy()
   })
+
+  test("details mark joined claims and color conflicting claims", async () => {
+    const node = session({ sessionID: "ses_owner0000001", identity: "agent" })
+    const state: MonitorState = {
+      ...monitorState(), sessions: [node],
+      registry: {
+        claims: ["conflict", "clean"].map((id) => ({
+          claimID: id, agent: "agent", status: "active", issued: new Date(0).toISOString(),
+          expires: new Date(100000).toISOString(), note: "",
+          scopes: { patterns: [], files: [], docs: [], evidence: [], baton: null },
+        })),
+        verifications: [], errors: [], conflicts: [{ a: "other", b: "conflict", reason: "overlapping file" }],
+      },
+    }
+    const setup = await testRender(() => (
+      <DetailsPane api={stubApi()} state={() => state} session={node} group="ready" current={false} />
+    ), { width: 50, height: 30 })
+    await setup.flush()
+    try {
+      const frame = setup.captureCharFrame()
+      expect(frame).toContain("⇄ ses_owne")
+      expect(frame).toContain("! overlapping file")
+      const texts = (node: import("@opentui/core").Renderable): TextRenderable[] =>
+        node instanceof TextRenderable ? [node] : node.getChildren().flatMap(texts)
+      const lines = texts(setup.renderer.root)
+      expect(lines.find((line) => line.plainText.includes("conflict"))?.fg.equals(RGBA.fromHex("#ff0000"))).toBe(true)
+      expect(lines.find((line) => line.plainText.includes("clean"))?.fg.equals(RGBA.fromHex("#ffffff"))).toBe(true)
+    } finally {
+      setup.renderer.destroy()
+    }
+  })
 })
 
 describe("TUI command center keys", () => {
+  for (const mode of ["cached", "empty", "remote", "failure"] as const) {
+    test(`Enter uses the real navigator for a ${mode} session`, async () => {
+      const keys = createTestKeymap({ defaultKeys: true })
+      registerEnabledFields(keys.keymap)
+      const routes: Array<{ name: string; params?: Record<string, unknown> }> = []
+      const selected: string[] = []
+      const requests: string[] = []
+      const notices: string[] = []
+      const id = "ses_empty0000001"
+      const api = {
+        ...stubApi(),
+        keymap: keys.keymap,
+        state: { ...stubApi().state, session: { ...stubApi().state.session, get: () => mode === "cached" ? { id } : undefined } },
+        route: { current: { name: "home" }, navigate: (name: string, params?: Record<string, unknown>) => routes.push({ name, params }) },
+        ui: { ...stubApi().ui, toast: (notice: { message: string }) => notices.push(notice.message) },
+        client: createOpencodeClient({
+          baseUrl: "http://host.test",
+          fetch: (async (request: Request) => {
+            const path = new URL(request.url).pathname
+            if (path.endsWith("/message")) return Response.json([])
+            requests.push(path)
+            if (mode === "failure") throw new Error("Host unavailable")
+            return mode === "remote"
+              ? Response.json({ name: "NotFoundError", data: { message: "Session not found" } }, { status: 404 })
+              : Response.json({ id, title: "Empty local session" })
+          }) as typeof fetch,
+        }),
+      } as unknown as TuiPluginApi
+      const navigate = createSessionNavigator(api, "swarm", (value) => selected.push(value))
+      let pending: Promise<void> | undefined
+      const state = { ...monitorState(), sessions: [session({ sessionID: id })] }
+      const setup = await renderHosted(() => (
+        <Dashboard api={api} state={() => state}
+          onClose={() => undefined} openSession={(value) => { pending = navigate(value) }} compose={() => undefined} />
+      ))
+      try {
+        keys.host.press("return")
+        await pending
+        expect(requests).toEqual(mode === "cached" ? [] : [`/session/${id}`])
+        if (mode === "failure") {
+          expect(routes).toEqual([])
+          expect(selected).toEqual([])
+          expect(notices).toHaveLength(1)
+          expect(notices[0]).toContain("Host unavailable")
+          return
+        }
+        expect(routes).toEqual([{ name: mode === "remote" ? "swarm.session" : "session", params: { sessionID: id } }])
+        expect(selected).toEqual(mode === "remote" ? [id] : [])
+        expect(notices).toEqual([])
+      } finally {
+        setup.renderer.destroy()
+        keys.cleanup()
+      }
+    })
+  }
+
+  test("search filters the list and Escape clears it before leaving", async () => {
+    const keys = createTestKeymap({ defaultKeys: true })
+    registerEnabledFields(keys.keymap)
+    const opened: string[] = []
+    let backs = 0
+    let dialog = false
+    let prompt: TuiDialogPromptProps | undefined
+    const api = {
+      ...stubApi(), keymap: keys.keymap,
+      ui: {
+        DialogPrompt: (value: TuiDialogPromptProps) => { prompt = value; return undefined },
+        dialog: { get open() { return dialog }, replace: (render: () => JSX.Element) => { dialog = true; render() }, clear: () => { dialog = false } },
+      },
+    } as unknown as TuiPluginApi
+    const setup = await renderHosted(() => (
+      <Dashboard api={api} state={monitorState}
+        onClose={() => { backs += 1 }} openSession={(id) => opened.push(id)} compose={() => undefined} />
+    ))
+    try {
+      keys.host.press("/")
+      expect(dialog).toBe(true)
+      expect(prompt?.title).toBe("Search sessions")
+      keys.host.press("return")
+      expect(opened).toEqual([])
+      prompt?.onConfirm?.(" ROOT ")
+      expect(dialog).toBe(false)
+      await setup.flush()
+      expect(setup.captureCharFrame()).toContain("Search: ROOT")
+      expect(setup.captureCharFrame()).not.toContain("child session")
+      keys.host.press("return")
+      expect(opened).toEqual(["ses_root00000001"])
+      keys.host.press("/")
+      expect(prompt?.value).toBe("ROOT")
+      prompt?.onConfirm?.("no-match")
+      await setup.flush()
+      expect(setup.captureCharFrame()).toContain("no matching sessions")
+      keys.host.press("return")
+      expect(opened).toHaveLength(1)
+      keys.host.press("escape")
+      expect(backs).toBe(0)
+      keys.host.press("return")
+      expect(opened.at(-1)).toBe("ses_child0000001")
+      keys.host.press("escape")
+      expect(backs).toBe(1)
+      expect(keys.diagnostics.errors).toEqual([])
+    } finally {
+      setup.renderer.destroy()
+      keys.cleanup()
+    }
+  })
+
+  test("tabs filter, grouping persists, and expansion only acts in Hierarchy", async () => {
+    const keys = createTestKeymap({ defaultKeys: true })
+    registerEnabledFields(keys.keymap)
+    const opened: string[] = []
+    const saved = new Map<string, unknown>()
+    const api = { ...stubApi(), keymap: keys.keymap, kv: { get: (_: string, fallback: unknown) => fallback, set: (key: string, value: unknown) => saved.set(key, value) } } as unknown as TuiPluginApi
+    const setup = await renderHosted(() => (
+      <Dashboard api={api} state={monitorState}
+        onClose={() => undefined} openSession={(id) => opened.push(id)} compose={() => undefined} />
+    ))
+    try {
+      keys.host.press("right")
+      keys.host.press("space")
+      expect(opened).toEqual([])
+      keys.host.press("tab")
+      keys.host.press("return")
+      expect(opened).toEqual([])
+      keys.host.press("tab", { shift: true })
+      keys.host.press("return")
+      expect(opened).toEqual(["ses_child0000001"])
+      keys.host.press("g")
+      expect(saved.get("subplug.grouping")).toBe("status")
+      keys.host.press("g")
+      expect(saved.get("subplug.grouping")).toBe("agent")
+      keys.host.press("g")
+      expect(saved.get("subplug.grouping")).toBe("hierarchy")
+      keys.host.press("left")
+      expect(saved.get("subplug.collapsed")).toEqual(["ses_root00000001"])
+      keys.host.press("right")
+      expect(saved.get("subplug.collapsed")).toEqual([])
+      expect(opened).toHaveLength(1)
+      expect(keys.diagnostics.errors).toEqual([])
+    } finally {
+      setup.renderer.destroy()
+      keys.cleanup()
+    }
+  })
+
+  test("paging and home/end select the expected sessions", async () => {
+    const keys = createTestKeymap({ defaultKeys: true })
+    registerEnabledFields(keys.keymap)
+    const opened: string[] = []
+    const api = { ...stubApi(80, 20), keymap: keys.keymap } as unknown as TuiPluginApi
+    const state = { ...monitorState(), sessions: Array.from({ length: 30 }, (_, index) => session({ sessionID: `ses_${String(index).padStart(2, "0")}`, lastEventAt: 30 - index })) }
+    const setup = await renderHosted(() => (
+      <Dashboard api={api} state={() => state}
+        onClose={() => undefined} openSession={(id) => opened.push(id)} compose={() => undefined} />
+    ), 80, 20)
+    try {
+      for (const key of ["pagedown", "return", "pageup", "return", "end", "return", "home", "return"]) keys.host.press(key)
+      expect(opened).toEqual(["ses_11", "ses_00", "ses_29", "ses_00"])
+      expect(keys.diagnostics.errors).toEqual([])
+    } finally {
+      setup.renderer.destroy()
+      keys.cleanup()
+    }
+  })
+
   test("Enter opens the selected session; help toggles before back", async () => {
     const keys = createTestKeymap({ defaultKeys: true })
     registerEnabledFields(keys.keymap)
@@ -262,14 +475,11 @@ describe("TUI command center keys", () => {
     const api = {
       ...stubApi(WIDTH, HEIGHT),
       keymap: keys.keymap,
-      route: { current: { name: "session", params: { sessionID: "ses_root00000001" } } },
     } as unknown as TuiPluginApi
     const setup = await renderHosted(() => (
       <Dashboard
         api={api}
         state={monitorState}
-        route="subplug"
-        command="subplug.open"
         onClose={() => { backs += 1 }}
         openSession={(id) => { opened.push(id) }}
         compose={() => undefined}
@@ -323,7 +533,7 @@ describe("TUI dialog keyboard isolation", () => {
       const compose = createFollowUpComposer(api, monitorState)
       const setup = await renderHosted(() => view === "dashboard" ? (
         <Dashboard
-          api={api} state={monitorState} route="subplug" command="subplug.open"
+          api={api} state={monitorState}
           onClose={() => { backs += 1 }} openSession={() => { navigations += 1 }} compose={compose}
         />
       ) : (

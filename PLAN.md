@@ -98,7 +98,12 @@ subplug/
   package.json           # bun; @opencode-ai/plugin pinned 1.18.32; @opentui/* for TUI types
   tsconfig.json
   src/server/index.ts    # event tap -> hub; shell.env identity inject; swarm_status tool
-  src/tui/index.tsx      # sidebar slot, dashboard route, toasts/attention (SolidJS)
+  src/tui/index.tsx      # plugin wiring, sidebar slot, detail route, toasts/attention
+  src/tui/dashboard.tsx # command-center list, filters, grouping, search/help
+  src/tui/details-pane.tsx # selected task, joined claims/conflicts, transcript preview
+  src/tui/dashboard-keys.ts # dashboard keybindings
+  src/tui/navigation.ts # host-client session lookup and route switching
+  src/tui/presentation.ts src/tui/transcript.ts # shared display/data helpers
   src/hub/               # store paths, append, rotation, fold, monitor merge, comms
   src/coord/             # claims reader/fold/conflicts, glob, repo discovery
   src/shared/            # normalized records, redaction
@@ -412,9 +417,9 @@ logic; the harness only proves hooks fire and pointers land.
 | Probe: injection part persistence + `comms.delivered` | done | `--probe-inject` (see results) |
 | P6 cross-process + portability | partial | state-dir timeout guard + hang test; multi-server fold test; `hubGroup` in server + TUI; CI (`.github/workflows/ci.yml`), `.gitattributes`, LICENSE, `bun.lock`, engines already present; web view not started |
 | P6 review fixes | done | degenerate hub keys -> `unknown`; non-positive timeout guard; globally newest record limit; `EventTail` fresh-comms injection; spike/`--tui`/`--probe-inject` green |
-| TUI layout + sidebar affordance | done | rows/panels constrained to full width, conversation clipped; explicit `flexShrink={0}` on labels/rows/panels stops auto-shrink overlap on short terminals (`flexShrink` defaults to 1 for auto dimensions); sidebar hint + click-to-open; `test/tui.test.tsx` static layout/click/short-terminal tests (note: `@opentui/solid` `testRender` is snapshot-only, async updates do not repaint) |
+| TUI layout + sidebar affordance | done | rows/panels constrained to full width, conversation clipped; explicit `flexShrink={0}` on labels/rows/panels stops auto-shrink overlap on short terminals (`flexShrink` defaults to 1 for auto dimensions); sidebar hint + click-to-open; `test/tui.test.tsx` layout/click/short-terminal tests; `bunfig.toml` preloads the Solid compiler so rendered updates are reactive |
 | Edit-lease enforcement | done | auto-acquire/refresh via `tools/coord.py lock` for `edit`/`write`/`apply_patch`; `apply_patch` scans add/update/delete plus both sides of a move; denial thrown from `tool.execute.before` outside the monitoring catch; full-session-id identity with a per-repository base cache; `test/leases.test.ts` + `test/lease-enforcement.test.ts` |
-| TUI command center (codex-style dashboard) | done | `src/tui/command-center.ts` pure helpers (`test/command-center.test.ts`, 13 tests); `test/tui.test.tsx` layout (tabs/columns/details/narrow) + keymap tests (Enter open, help/back); Enter switches to the owning session via `api.route.navigate("session", …)` and falls back to `subplug.session` for non-local sessions; `--tui` load |
+| TUI command center (codex-style dashboard) | done | centralized status metadata and bundled task state in `src/tui/command-center.ts` (`test/command-center.test.ts`, 13 tests); separate dashboard, details, keymap, navigation, presentation, and transcript modules; `test/tui.test.tsx` covers layout, the previous-route current-session marker, joined-claim markers/conflict colors, reactive list search, tab/shift-tab, grouping, hierarchy-only expansion, paging/home/end, and help/back; Enter tests execute the production navigator with the generated host SDK, including cached/empty local sessions, host-client 404 fallback, and lookup failure; `/` confirms a list query and Escape clears it; header counts, click selection/filtering, and paging are documented in README; `bun test` (151 passing), `bun run typecheck`, and the installed OpenCode `--tui` load harness verified this refactor |
 
 ## P6 review fixes
 
