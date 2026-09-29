@@ -1,6 +1,6 @@
 {
   "name": "subplug",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Monitor other opencode sessions and subagents, overlaid with the coordination/ claim registry, with queue-only addressed comms.",
   "license": "MIT",
@@ -16,10 +16,14 @@
     "coordination"
   ],
   "engines": {
-    "opencode": ">=1.18 <2",
+    "opencode": ">=2",
     "bun": ">=1.3"
   },
   "exports": {
+    ".": {
+      "import": "./src/server/index.ts",
+      "types": "./src/server/index.ts"
+    },
     "./server": {
       "import": "./src/server/index.ts",
       "types": "./src/server/index.ts"
@@ -30,6 +34,8 @@
     }
   },
   "files": [
+    "server.ts",
+    "tui.tsx",
     "src",
     "README.md",
     "LICENSE"
@@ -42,19 +48,15 @@
     "prepublishOnly": "bun run typecheck && bun test"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^1.18.32"
+    "@opencode/plugin": "^2.0.19"
   },
   "peerDependencies": {
-    "@opentui/core": ">=0.4.5",
-    "@opentui/keymap": ">=0.4.5",
-    "@opentui/solid": ">=0.4.5",
+    "@opentui/core": ">=0.5.12",
+    "@opentui/solid": ">=0.5.12",
     "solid-js": ">=1.9.0"
   },
   "peerDependenciesMeta": {
     "@opentui/core": {
-      "optional": true
-    },
-    "@opentui/keymap": {
       "optional": true
     },
     "@opentui/solid": {
@@ -65,9 +67,7 @@
     }
   },
   "devDependencies": {
-    "@opencode-ai/sdk": "^1.18.32",
     "@opentui/core": "0.5.12",
-    "@opentui/keymap": "0.5.12",
     "@opentui/solid": "0.5.12",
     "@types/bun": "1.3.14",
     "@types/node": "24.12.2",

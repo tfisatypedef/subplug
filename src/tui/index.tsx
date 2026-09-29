@@ -3,20 +3,21 @@ import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { randomUUID } from "node:crypto"
 import pkg from "../../package.json"
-import type { KeyEvent, RGBA, Renderable, TextRenderable } from "@opentui/core"
-import { createBindingLookup, type BindingConfig } from "@opentui/keymap/extras"
+import { Plugin } from "@opencode/plugin/tui"
+import type { RGBA, TextRenderable } from "@opentui/core"
 import type { JSX } from "@opentui/solid"
-import { createEffect, createSignal, onCleanup } from "solid-js"
-import type { TuiPlugin, TuiPluginApi, TuiPluginModule, TuiSlotPlugin } from "@opencode-ai/plugin/tui"
+import { createSignal, onCleanup } from "solid-js"
 import type { MonitorState, SessionNode } from "../shared/types.ts"
 import { readMonitorState } from "../hub/monitor.ts"
 import { inboxFor } from "../hub/comms.ts"
-import { EventLog } from "../hub/append.ts"
+import { EventLog, readEventRecords } from "../hub/append.ts"
 import { FollowUpConfirmationRequired, followUpError, sendFollowUp } from "../shared/follow-up.ts"
 import { rollupSubtree } from "../hub/tree.ts"
 import type { TranscriptRow } from "../shared/transcript.ts"
-import { hubRoot } from "../hub/paths.ts"
+import { fallbackStateDir, hubRoot, readHubPointer } from "../hub/paths.ts"
 import { findRepoRoot } from "../coord/repo.ts"
+import { backfillSessions, listNativeSessions, loadSessionDetailV2, type SessionDetailV2 } from "./data.ts"
+import { resolveTuiOptions, type TuiContextLike, type SubplugTuiOptions } from "./context.ts"
 import { Dashboard } from "./dashboard.tsx"
 import {
   age,
@@ -24,55 +25,16 @@ import {
   rollupDetail,
   sessionLabel,
   shortID,
-  skinOf,
+  skinForTheme,
   statusColor,
   statusMark,
   type Skin,
 } from "./presentation.ts"
-import { loadSessionDetail, type SessionDetailState } from "./transcript.ts"
 import { createSessionNavigator } from "./navigation.ts"
 
 export { Dashboard } from "./dashboard.tsx"
+export { DetailsPane } from "./details-pane.tsx"
 export type { Skin } from "./presentation.ts"
-
-type Cfg = {
-  route: string
-  command: string
-  keybinds: BindingConfig<Renderable, KeyEvent> | undefined
-  intervalMs: number
-  sidebarAspect: number
-  storageDir: string | undefined
-  hubGroup: string | undefined
-}
-
-const defaultKeymap: BindingConfig<Renderable, KeyEvent> = {
-  "subplug.open": "ctrl+alt+a",
-}
-
-function pick(value: unknown, fallback: string): string {
-  return typeof value === "string" && value.trim() ? value : fallback
-}
-
-function num(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback
-}
-
-function record(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value)
-}
-
-function config(options: Record<string, unknown> | undefined): Cfg {
-  const coord = record(options?.coord) ? options.coord : undefined
-  return {
-    route: pick(options?.route, "subplug"),
-    command: pick(options?.command, "subplug.open"),
-    keybinds: record(options?.keybinds) ? (options.keybinds as BindingConfig<Renderable, KeyEvent>) : undefined,
-    intervalMs: Math.max(250, num(options?.intervalMs, 1000)),
-    sidebarAspect: num(options?.sidebarAspect, 0.5),
-    storageDir: pick(options?.storageDir, "") || pick(coord?.storageDir, "") || process.env.SUBPLUG_STORAGE_DIR || undefined,
-    hubGroup: pick(options?.hubGroup, "") || pick(coord?.hubGroup, "") || process.env.SUBPLUG_HUB_GROUP || undefined,
-  }
-}
 
 function emptyState(): MonitorState {
   const now = Date.now()
@@ -160,46 +122,73 @@ function compactTokens(value: number): string {
   return `${(value / 1_000_000).toFixed(2)}M`
 }
 
-function createMonitor(api: TuiPluginApi, cfg: Cfg) {
+function projectIDFor(ctx: TuiContextLike): string | undefined {
+  const directory = ctx.location?.directory
+  const projects = ctx.data.project?.list() ?? []
+  if (!directory) return projects[0]?.id
+  const exact = projects.find((project) => project.canonical === directory)
+  if (exact?.id) return exact.id
+  const nested = projects.find(
+    (project) => project.canonical && (directory.startsWith(project.canonical) || project.canonical.startsWith(directory)),
+  )
+  return nested?.id ?? projects[0]?.id
+}
+
+function createMonitor(ctx: TuiContextLike, cfg: SubplugTuiOptions) {
   const [state, setState] = createSignal<MonitorState>(emptyState())
+  const serverID = `subplug-tui-${randomUUID()}`
   let hubDir: string | undefined
   let repoRoot: string | undefined
   let resolved = false
+  let backfilled = false
   let lastRiskAt = Date.now()
 
-  const resolvePaths = async () => {
+  const resolvePaths = async (): Promise<void> => {
     if (resolved) return
     resolved = true
-    let projectID = "unknown"
-    try {
-      const response = (await api.client.project.current()) as unknown as {
-        data?: { id?: string }
-        id?: string
-      }
-      projectID = response?.data?.id ?? response?.id ?? "unknown"
-    } catch {
-      // keep the placeholder project id
-    }
-    hubDir = hubRoot(cfg.storageDir ?? api.state.path.state, cfg.hubGroup ?? projectID)
-    repoRoot = findRepoRoot(api.state.path.worktree)
+    const explicitDir = cfg.storageDir ?? process.env.SUBPLUG_STORAGE_DIR
+    const pointer = explicitDir ? undefined : readHubPointer()
+    hubDir =
+      pointer?.hubDir ?? hubRoot(explicitDir ?? fallbackStateDir(), cfg.hubGroup ?? projectIDFor(ctx) ?? "unknown")
+    repoRoot = findRepoRoot(ctx.location?.directory ?? process.cwd())
   }
 
-  const tick = async () => {
+  const runBackfill = async (): Promise<void> => {
+    if (backfilled || !hubDir) return
+    backfilled = true
+    try {
+      const known = new Set(
+        readEventRecords(hubDir)
+          .map((record) => record.sessionID)
+          .filter((id): id is string => Boolean(id)),
+      )
+      const native = await listNativeSessions(ctx)
+      if (!native.length) return
+      const log = new EventLog(hubDir, serverID)
+      const written = backfillSessions(known, native, (record) => log.append(record), serverID)
+      if (written) setState(readMonitorState(hubDir, repoRoot))
+    } catch {
+      // backfill is best-effort
+    }
+  }
+
+  const tick = async (): Promise<void> => {
     try {
       await resolvePaths()
       if (!hubDir) return
+      await runBackfill()
       const next = readMonitorState(hubDir, repoRoot)
       setState(next)
       const latest = next.risks.at(-1)
       if (latest && latest.ts > lastRiskAt) {
         lastRiskAt = latest.ts
-        api.ui.toast({
+        ctx.ui.toast.show({
           variant: "warning",
           title: "subplug: claim coverage",
           message: latest.summary,
           duration: 6000,
         })
-        void api.attention.notify({
+        void ctx.attention.notify({
           title: "subplug",
           message: latest.summary,
           sound: { name: "error" },
@@ -214,9 +203,11 @@ function createMonitor(api: TuiPluginApi, cfg: Cfg) {
   const timer = setInterval(() => {
     void tick()
   }, cfg.intervalMs)
-  api.lifecycle.onDispose(() => clearInterval(timer))
 
-  return state
+  return {
+    state,
+    dispose: () => clearInterval(timer),
+  }
 }
 
 const SIDEBAR_WIDTH = 36
@@ -246,16 +237,16 @@ function MarqueeRow(props: { width: number; fg: RGBA | string; children: JSX.Ele
 }
 
 export function Sidebar(props: {
-  api: TuiPluginApi
+  ctx: TuiContextLike
   state: () => MonitorState
   sessionID: string
   aspect?: number
   onOpen: () => void
 }) {
   const snapshot = () => props.state()
-  const skin = () => skinOf(props.api)
+  const skin = () => skinForTheme(props.ctx.theme)
   const cellAspect = () => {
-    const renderer = props.api.renderer
+    const renderer = props.ctx.renderer
     const resolution = renderer?.resolution
     const cols = renderer?.terminalWidth || renderer?.width
     const rows = renderer?.terminalHeight || renderer?.height
@@ -323,7 +314,7 @@ export function Sidebar(props: {
 }
 
 export function SessionDetail(props: {
-  api: TuiPluginApi
+  ctx: TuiContextLike
   state: () => MonitorState
   sessionID: () => string
   trail: () => string[]
@@ -332,8 +323,8 @@ export function SessionDetail(props: {
   compose: (sessionID: string, status: SessionNode["status"]) => void
   intervalMs: number
 }) {
-  const skin = () => skinOf(props.api)
-  const [detail, setDetail] = createSignal<SessionDetailState>({ todos: [], rows: [], tokens: 0, cost: 0, source: "none" })
+  const skin = () => skinForTheme(props.ctx.theme)
+  const [detail, setDetail] = createSignal<SessionDetailV2>({ todos: [], rows: [], tokens: 0, cost: 0, source: "none" })
   const [scroll, setScroll] = createSignal(0)
   const maxScroll = () => Math.max(0, detail().rows.length - TRANSCRIPT_WINDOW)
   const visibleRows = () => {
@@ -390,72 +381,13 @@ export function SessionDetail(props: {
 
   const refresh = async () => {
     try {
-      setDetail(await loadSessionDetail(props.api, props.sessionID()))
+      setDetail(await loadSessionDetailV2(props.ctx, props.sessionID()))
     } catch {
       // detail refresh is best-effort
     }
   }
   void refresh()
   const timer = setInterval(() => void refresh(), Math.max(500, props.intervalMs))
-  onCleanup(() => clearInterval(timer))
-  createEffect(() => {
-    props.sessionID()
-    setScroll(0)
-  })
-
-  const detailKeys: BindingConfig<Renderable, KeyEvent> = {
-    "subplug.detail.next": "down",
-    "subplug.detail.prev": "up",
-    "subplug.detail.descend": "return",
-    "subplug.detail.scroll.up": "pageup",
-    "subplug.detail.scroll.down": "pagedown",
-    "subplug.detail.compose": ["f", "m"],
-    "subplug.back": ["escape", "q"],
-  }
-  const keys = createBindingLookup(detailKeys)
-  const disposeKeys = props.api.keymap.registerLayer({
-    priority: 100,
-    enabled: () => !props.api.ui.dialog.open,
-    commands: [
-      { name: "subplug.detail.next", title: "Subplug: next subagent", category: "Plugin", run: () => moveChild(1) },
-      { name: "subplug.detail.prev", title: "Subplug: previous subagent", category: "Plugin", run: () => moveChild(-1) },
-      { name: "subplug.detail.descend", title: "Subplug: open subagent", category: "Plugin", run: () => descend() },
-      {
-        name: "subplug.detail.scroll.up",
-        title: "Subplug: scroll transcript up",
-        category: "Plugin",
-        run: () => setScroll(Math.min(maxScroll(), scroll() + TRANSCRIPT_WINDOW)),
-      },
-      {
-        name: "subplug.detail.scroll.down",
-        title: "Subplug: scroll transcript down",
-        category: "Plugin",
-        run: () => setScroll(Math.max(0, scroll() - TRANSCRIPT_WINDOW)),
-      },
-      {
-        name: "subplug.detail.compose",
-        title: "Subplug: send follow-up context",
-        category: "Plugin",
-        run: () => props.compose(props.sessionID(), session()?.status ?? "unknown"),
-      },
-      {
-        name: "subplug.back",
-        title: "Subplug: back",
-        category: "Plugin",
-        run: () => props.back(),
-      },
-    ],
-    bindings: keys.gather("subplug.detail", [
-      "subplug.detail.next",
-      "subplug.detail.prev",
-      "subplug.detail.descend",
-      "subplug.detail.scroll.up",
-      "subplug.detail.scroll.down",
-      "subplug.detail.compose",
-      "subplug.back",
-    ]),
-  })
-  onCleanup(disposeKeys)
 
   const usage = () => {
     const value = detail()
@@ -648,10 +580,15 @@ export function SessionDetail(props: {
   )
 }
 
-export function createFollowUpComposer(api: TuiPluginApi, state: () => MonitorState) {
-  const { DialogConfirm, DialogPrompt } = api.ui
+export function createFollowUpComposer(ctx: TuiContextLike, state: () => MonitorState) {
   const serverID = `subplug-tui-${randomUUID()}`
   let eventLog: EventLog | undefined
+  const record = (value: Parameters<typeof EventLog.prototype.append>[0]): void => {
+    const hubDir = state().hubDir
+    if (!hubDir) return
+    eventLog ??= new EventLog(hubDir, serverID)
+    eventLog.append(value)
+  }
   const promptTarget = async (sessionID: string, text: string, confirm = false): Promise<void> => {
     try {
       const target = state().sessions.find((session) => session.sessionID === sessionID)
@@ -659,22 +596,18 @@ export function createFollowUpComposer(api: TuiPluginApi, state: () => MonitorSt
       if (!state().hubDir) throw new Error("monitor is still loading; try again shortly")
       const sent = await sendFollowUp({
         target,
+        status: target.status,
         message: text,
         from: "user",
         serverID,
         confirm,
         transport: {
-          get: (sessionID, directory) => api.client.session.get({ sessionID, directory }, { throwOnError: true }),
-          status: (directory) => api.client.session.status({ directory }, { throwOnError: true }),
-          prompt: (request) => api.client.session.prompt(request, { throwOnError: true }),
-          promptAsync: (request) => api.client.session.promptAsync(request, { throwOnError: true }),
+          get: (id) => ctx.client.session.get({ sessionID: id }),
+          prompt: (request) => ctx.client.session.prompt(request),
         },
-        record: (record) => {
-          eventLog ??= new EventLog(state().hubDir, serverID)
-          eventLog.append(record)
-        },
+        record,
       })
-      api.ui.toast({
+      ctx.ui.toast.show({
         variant: "success",
         title: "subplug",
         message: `${sent.noReply ? "follow-up queued" : "follow-up sent; agent resuming"} to ${shortID(sessionID)}`,
@@ -682,23 +615,15 @@ export function createFollowUpComposer(api: TuiPluginApi, state: () => MonitorSt
       })
     } catch (error) {
       if (error instanceof FollowUpConfirmationRequired) {
-        api.ui.dialog.replace(
-          () => (
-            <DialogConfirm
-              title={`agent is ${error.status}`}
-              message="Send this follow-up context at the agent's next step? It may affect work already in progress."
-              onConfirm={() => {
-                api.ui.dialog.clear()
-                void promptTarget(sessionID, text, true)
-              }}
-              onCancel={() => api.ui.dialog.clear()}
-            />
-          ),
-          () => undefined,
-        )
+        const confirmed = await ctx.ui.dialog.confirm({
+          title: `agent is ${error.status}`,
+          message: "Send this follow-up context at the agent's next step? It may affect work already in progress.",
+          label: { confirm: "Queue follow-up", cancel: "Cancel" },
+        })
+        if (confirmed) await promptTarget(sessionID, text, true)
         return
       }
-      api.ui.toast({
+      ctx.ui.toast.show({
         variant: "error",
         title: "subplug",
         message: `follow-up failed: ${followUpError(error)}`,
@@ -706,223 +631,208 @@ export function createFollowUpComposer(api: TuiPluginApi, state: () => MonitorSt
       })
     }
   }
-  return (sessionID: string, status: SessionNode["status"]): void => {
+  return async (sessionID: string, status: SessionNode["status"]): Promise<void> => {
     if (!sessionID) return
     const target = state().sessions.find((session) => session.sessionID === sessionID)
-    api.ui.dialog.replace(
-      () => (
-        <DialogPrompt
-          title={`Follow-up: ${target ? sessionLabel(target) : shortID(sessionID)}`}
-          placeholder="Additional context or instructions"
-          description={() => (
-            <text>
-              {status === "idle"
-                ? "Sending resumes this agent with your follow-up context."
-                : "Running agents receive context at their next step; you will confirm before sending."}
-            </text>
-          )}
-          onConfirm={(value: string) => {
-            api.ui.dialog.clear()
-            const text = value.trim()
-            if (text) void promptTarget(sessionID, text)
-          }}
-          onCancel={() => api.ui.dialog.clear()}
-        />
-      ),
-      () => undefined,
-    )
+    const value = await ctx.ui.dialog.prompt({
+      title: `Follow-up: ${target ? sessionLabel(target) : shortID(sessionID)}`,
+      placeholder: "Additional context or instructions",
+      description:
+        status === "idle"
+          ? "Sending resumes this agent with your follow-up context."
+          : "Running agents receive context at their next step; you will confirm before sending.",
+    })
+    if (value === undefined) return
+    const text = value.trim()
+    if (text) await promptTarget(sessionID, text)
   }
 }
 
-const tui: TuiPlugin = async (api, options) => {
-  if (options?.enabled === false) return
-
-  const cfg = config(options)
-  const state = createMonitor(api, cfg)
-  const [previousRoute, setPreviousRoute] = createSignal<{ name: string; params?: Record<string, unknown> }>({
-    name: "home",
-  })
-  const closeDashboard = () => {
-    const previous = previousRoute()
-    if (previous.name === "session") {
-      const sessionID = previous.params?.sessionID
-      if (typeof sessionID === "string" && sessionID) {
-        api.route.navigate("session", { sessionID })
-        return
-      }
-    }
-    if (previous.name === "home") {
-      api.route.navigate("home")
-      return
-    }
-    api.route.navigate(previous.name, previous.params)
-  }
-
-  const openDashboard = () => {
-    setPreviousRoute(api.route.current)
-    api.route.navigate(cfg.route)
-  }
-
-  const previousSessionID = () => {
-    const previous = previousRoute()
-    if (previous.name === "session") {
-      const sessionID = previous.params?.sessionID
-      if (typeof sessionID === "string" && sessionID) return sessionID
-    }
-    return undefined
-  }
-
-  const [detailTrail, setDetailTrail] = createSignal<string[]>([])
-  const openSession = createSessionNavigator(api, cfg.route, (id) => setDetailTrail([id]))
-  const descendSession = (sessionID: string) => {
-    setDetailTrail((trail) => [...trail, sessionID])
-    api.route.navigate(`${cfg.route}.session`, { sessionID })
-  }
-  const backFromDetail = () => {
-    const trail = detailTrail()
-    if (trail.length > 1) {
-      const next = trail.slice(0, -1)
-      setDetailTrail(next)
-      api.route.navigate(`${cfg.route}.session`, { sessionID: next[next.length - 1] ?? next[0] ?? "" })
-      return
-    }
-    setDetailTrail([])
-    closeDashboard()
-  }
-
-  const compose = createFollowUpComposer(api, state)
-
-  try {
-    const markerDir = join(cfg.storageDir ?? api.state.path.state, "subplug")
-    mkdirSync(markerDir, { recursive: true })
-    writeFileSync(
-      join(markerDir, "tui-plugin-loaded.json"),
-      `${JSON.stringify({ at: Date.now(), route: cfg.route, command: cfg.command, version: pkg.version })}\n`,
-    )
-  } catch {
-    // the marker is diagnostic only
-  }
-
-  api.route.register([
-    {
-      name: cfg.route,
-      render: () => (
-        <Dashboard
-          api={api}
-          state={state}
-          currentSession={previousSessionID}
-          onClose={closeDashboard}
-          openSession={openSession}
-          compose={compose}
-        />
-      ),
-    },
-    {
-      name: `${cfg.route}.session`,
-      render: (input) => (
-        <SessionDetail
-          api={api}
-          state={state}
-          sessionID={() =>
-            detailTrail().at(-1) ?? (typeof input.params?.sessionID === "string" ? input.params.sessionID : "")
-          }
-          trail={() => detailTrail()}
-          descend={descendSession}
-          back={backFromDetail}
-          compose={compose}
-          intervalMs={cfg.intervalMs}
-        />
-      ),
-    },
-  ])
-
-  const keys = createBindingLookup({ ...defaultKeymap, ...(cfg.keybinds ?? {}) })
-  api.keymap.registerLayer({
+function GlobalKeys(props: { ctx: TuiContextLike; route: string; open: () => void }) {
+  props.ctx.keymap.layer(() => ({
+    mode: "global",
     commands: [
       {
-        name: cfg.command,
+        id: "subplug.open",
         title: "Subplug: swarm dashboard",
-        category: "Plugin",
-        namespace: "palette",
-        slashName: "subplug",
-        run() {
-          openDashboard()
-        },
+        group: "Plugin",
+        bind: "ctrl+alt+a",
+        palette: true,
+        slash: { name: "subplug" },
+        run: () => props.open(),
       },
     ],
-    bindings: keys.gather("subplug.global", [cfg.command]),
-  })
+  }))
+  return <box width={0} height={0} />
+}
 
-  const slot: TuiSlotPlugin = {
-    order: 650,
-    slots: {
-      sidebar_content(ctx, value) {
-        return (
-          <Sidebar
-            api={api}
-            aspect={cfg.sidebarAspect}
+const tui = Plugin.define({
+  id: "subplug-tui",
+  async setup(rawContext) {
+    const ctx = rawContext as unknown as TuiContextLike
+    const cfg = resolveTuiOptions(ctx.options)
+    const monitor = createMonitor(ctx, cfg)
+    const state = monitor.state
+    const [previousRoute, setPreviousRoute] = createSignal<{ type: string; sessionID?: string; name?: string }>({
+      type: "home",
+    })
+    const closeDashboard = () => {
+      const previous = previousRoute()
+      if (previous.type === "session" && previous.sessionID) {
+        ctx.ui.router.navigate({ type: "session", sessionID: previous.sessionID })
+        return
+      }
+      ctx.ui.router.navigate({ type: "home" })
+    }
+
+    const openDashboard = () => {
+      setPreviousRoute(ctx.ui.router.current())
+      ctx.ui.router.navigate({ type: "plugin", name: cfg.route })
+    }
+    const previousSessionID = () => (previousRoute().type === "session" ? previousRoute().sessionID : undefined)
+
+    const [detailTrail, setDetailTrail] = createSignal<string[]>([])
+    const openSession = createSessionNavigator(ctx, cfg.route, (id) => setDetailTrail([id]))
+    const descendSession = (sessionID: string) => {
+      setDetailTrail((trail) => [...trail, sessionID])
+      ctx.ui.router.navigate({ type: "plugin", name: `${cfg.route}.session`, data: { sessionID } })
+    }
+    const backFromDetail = () => {
+      const trail = detailTrail()
+      if (trail.length > 1) {
+        const next = trail.slice(0, -1)
+        setDetailTrail(next)
+        ctx.ui.router.navigate({
+          type: "plugin",
+          name: `${cfg.route}.session`,
+          data: { sessionID: next[next.length - 1] ?? next[0] ?? "" },
+        })
+        return
+      }
+      setDetailTrail([])
+      closeDashboard()
+    }
+
+    const compose = createFollowUpComposer(ctx, state)
+
+    try {
+      const markerDir = join(cfg.storageDir ?? fallbackStateDir(), "subplug")
+      mkdirSync(markerDir, { recursive: true })
+      writeFileSync(
+        join(markerDir, "tui-plugin-loaded.json"),
+        `${JSON.stringify({ at: Date.now(), route: cfg.route, version: pkg.version })}\n`,
+      )
+    } catch {
+      // the marker is diagnostic only
+    }
+
+    const disposers: Array<() => void> = []
+    disposers.push(
+      ctx.ui.router.register({
+        name: cfg.route,
+        render: () => (
+          <Dashboard
+            ctx={ctx}
             state={state}
-            sessionID={value.session_id}
-            onOpen={openDashboard}
+            currentSession={previousSessionID}
+            onClose={closeDashboard}
+            openSession={openSession}
+            compose={compose}
           />
-        )
-      },
-    },
-  }
-  api.slots.register(slot)
+        ),
+      }),
+    )
+    disposers.push(
+      ctx.ui.router.register({
+        name: `${cfg.route}.session`,
+        render: (input) => (
+          <SessionDetail
+            ctx={ctx}
+            state={state}
+            sessionID={() =>
+              detailTrail().at(-1) ?? (typeof input.data?.sessionID === "string" ? input.data.sessionID : "")
+            }
+            trail={() => detailTrail()}
+            descend={descendSession}
+            back={backFromDetail}
+            compose={compose}
+            intervalMs={cfg.intervalMs}
+          />
+        ),
+      }),
+    )
+    disposers.push(
+      ctx.ui.slot({
+        append: "app",
+        render: () => <GlobalKeys ctx={ctx} route={cfg.route} open={openDashboard} />,
+      }),
+    )
+    disposers.push(
+      ctx.ui.slot({
+        append: "sidebar.content",
+        render: (input) => (
+          <Sidebar ctx={ctx} aspect={cfg.sidebarAspect} state={state} sessionID={input.sessionID} onOpen={openDashboard} />
+        ),
+      }),
+    )
 
-  const disposers: Array<() => void> = []
-  disposers.push(
-    api.event.on("session.error", (event: { properties?: { sessionID?: string } }) => {
-      const sessionID = event?.properties?.sessionID
-      api.ui.toast({
+    const eventSessionID = (event: unknown): string | undefined => {
+      if (!event || typeof event !== "object") return undefined
+      const data = (event as { data?: unknown }).data
+      if (!data || typeof data !== "object") return undefined
+      const id = (data as { sessionID?: unknown }).sessionID
+      return typeof id === "string" && id ? id : undefined
+    }
+
+    const unwatchError = ctx.data.on?.("session.execution.failed", (event: unknown) => {
+      const sessionID = eventSessionID(event)
+      ctx.ui.toast.show({
         variant: "error",
         title: "subplug",
         message: `session error${sessionID ? ` ${sessionID.slice(0, 10)}` : ""}`,
         duration: 4000,
+        ...(sessionID ? { sessionID } : {}),
       })
-      void api.attention.notify({
+      void ctx.attention.notify({
         title: "subplug",
         message: `session error${sessionID ? ` ${sessionID.slice(0, 10)}` : ""}`,
         notification: true,
         sound: { name: "error" },
       })
-    }),
-  )
-  disposers.push(
-    api.event.on("session.idle", (event: { properties?: { sessionID?: string } }) => {
-      const sessionID = event?.properties?.sessionID
+    })
+    if (typeof unwatchError === "function") disposers.push(unwatchError)
+
+    const unwatchIdle = ctx.data.on?.("session.idle", (event: unknown) => {
+      const sessionID = eventSessionID(event)
       if (!sessionID) return
       const session = state().sessions.find((item) => item.sessionID === sessionID)
       if (!session || session.kind !== "subagent") return
-      api.ui.toast({
+      ctx.ui.toast.show({
         variant: "info",
         title: "subplug",
         message: `subagent done ${sessionID.slice(0, 10)}`,
         duration: 3000,
+        sessionID,
       })
-      void api.attention.notify({
+      void ctx.attention.notify({
         title: "subplug",
         message: "subagent done",
         sound: { name: "subagent_done" },
       })
-    }),
-  )
+    })
+    if (typeof unwatchIdle === "function") disposers.push(unwatchIdle)
 
-  api.lifecycle.onDispose(() => {
-    for (const dispose of disposers) {
-      try {
-        dispose()
-      } catch {
-        // ignore
+    return () => {
+      monitor.dispose()
+      for (const dispose of disposers) {
+        try {
+          dispose()
+        } catch {
+          // ignore
+        }
       }
     }
-  })
-}
+  },
+})
 
-const plugin: TuiPluginModule & { id: string } = {
-  id: "subplug-tui",
-  tui,
-}
-
-export default plugin
+export default tui

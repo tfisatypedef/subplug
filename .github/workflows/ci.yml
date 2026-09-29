@@ -32,8 +32,8 @@ jobs:
           bun-version: latest
       - name: Install
         run: bun install --frozen-lockfile
-      - name: Install current opencode
-        run: npm install -g opencode-ai
+      - name: Install the v2 opencode CLI
+        run: npm install -g @opencode/cli@dev
       - name: Canary against the installed host
         run: bun run canary --load
 
@@ -47,6 +47,8 @@ jobs:
         run: |
           tar -tzf subplug-*.tgz | sed 's#^package/##' | sort > pack.txt
           grep -qx 'package.json' pack.txt
+          grep -qx 'server.ts' pack.txt
+          grep -qx 'tui.tsx' pack.txt
           grep -qx 'src/server/index.ts' pack.txt
           grep -qx 'src/tui/index.tsx' pack.txt
           grep -qx 'README.md' pack.txt

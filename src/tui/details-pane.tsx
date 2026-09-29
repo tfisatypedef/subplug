@@ -1,23 +1,23 @@
 /** @jsxImportSource @opentui/solid */
 import { createEffect, createMemo, createSignal, onCleanup } from "solid-js"
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { MonitorState, SessionNode } from "../shared/types.ts"
 import { joinClaimsToSessions, lastCommandBySession } from "../hub/monitor.ts"
 import { inboxFor } from "../hub/comms.ts"
 import { rollupSubtree } from "../hub/tree.ts"
-import { buildTranscriptRows, type TranscriptRow } from "../shared/transcript.ts"
+import { buildTranscriptRowsV2, type TranscriptRow } from "../shared/transcript.ts"
 import { statusGroupLabel, type StatusGroup } from "./command-center.ts"
-import { age, claimLabel, groupColor, groupMark, rollupDetail, sessionLabel, shortID, skinOf } from "./presentation.ts"
-import { loadTranscript } from "./transcript.ts"
+import { age, claimLabel, groupColor, groupMark, rollupDetail, sessionLabel, shortID, skinForTheme } from "./presentation.ts"
+import { loadTranscriptV2 } from "./data.ts"
+import type { TuiContextLike } from "./context.ts"
 
 export function DetailsPane(props: {
-  api: TuiPluginApi
+  ctx: TuiContextLike
   state: () => MonitorState
   session: SessionNode
   group: StatusGroup
   current: boolean
 }) {
-  const skin = () => skinOf(props.api)
+  const skin = () => skinForTheme(props.ctx.theme)
   const details = createMemo(() => {
     const state = props.state()
     const id = props.session.sessionID
@@ -42,10 +42,10 @@ export function DetailsPane(props: {
     const sessionID = props.session.sessionID
     let cancelled = false
     setPreview([])
-    void loadTranscript(props.api, sessionID)
+    void loadTranscriptV2(props.ctx, sessionID)
       .then((source) => {
         if (cancelled) return
-        const rows = buildTranscriptRows(source.messages.slice(-20), source.partsFor, { now: Date.now() })
+        const rows = buildTranscriptRowsV2(source.messages.slice(-20), { now: Date.now() })
         setPreview(
           rows
             .filter((row): row is Extract<TranscriptRow, { kind: "text" }> => row.kind === "text")

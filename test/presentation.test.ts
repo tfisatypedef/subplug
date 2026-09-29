@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { createMarquee, marqueeStep, type MarqueeTarget } from "../src/tui/presentation.ts"
+import { createMarquee, marqueeStep, skinForTheme, type MarqueeTarget, type ThemeLike } from "../src/tui/presentation.ts"
 
 describe("marquee", () => {
   test("ping-pongs between the ends", () => {
@@ -25,6 +25,36 @@ describe("marquee", () => {
     marquee.stop()
     expect(marquee.active).toBe(false)
     expect(target.scrollX).toBe(0)
+  })
+
+  test("maps v2 theme tokens onto the skin", () => {
+    const theme: ThemeLike = {
+      text: {
+        base: "text",
+        muted: "muted",
+        action: { primary: { base: "accent" }, secondary: { base: "secondary" } },
+        feedback: {
+          error: { base: "error" },
+          warning: { base: "warning" },
+          success: { base: "success" },
+          info: { base: "info" },
+        },
+      },
+      background: { base: "panel", raised: { base: "selection" } },
+      border: { base: "border" },
+    }
+    expect(skinForTheme(theme)).toEqual({
+      panel: "panel",
+      border: "border",
+      text: "text",
+      muted: "muted",
+      accent: "accent",
+      error: "error",
+      warning: "warning",
+      success: "success",
+      selection: "selection",
+      secondary: "secondary",
+    })
   })
 
   test("tolerates a missing target and a no-op width", async () => {

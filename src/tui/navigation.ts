@@ -1,26 +1,41 @@
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { TuiContextLike } from "./context.ts"
 
-export function createSessionNavigator(api: TuiPluginApi, route: string, select: (sessionID: string) => void) {
+function sessionIDOf(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined
+  const id = (value as { id?: unknown }).id
+  return typeof id === "string" && id ? id : undefined
+}
+
+function statusOf(error: unknown): number | undefined {
+  if (!error || typeof error !== "object") return undefined
+  const status = (error as { status?: unknown }).status
+  return typeof status === "number" ? status : undefined
+}
+
+export function createSessionNavigator(ctx: TuiContextLike, route: string, select: (sessionID: string) => void) {
+  const openDetail = (sessionID: string) => {
+    select(sessionID)
+    ctx.ui.router.navigate({ type: "plugin", name: `${route}.session`, data: { sessionID } })
+  }
   return async (sessionID: string): Promise<void> => {
     try {
-      if (api.state.session.get(sessionID)) {
-        api.route.navigate("session", { sessionID })
+      if (ctx.data.session.get(sessionID)) {
+        ctx.ui.router.navigate({ type: "session", sessionID })
         return
       }
       // The sync store omits empty sessions; the host client is authoritative.
-      const result = await api.client.session.get({ sessionID }, { throwOnError: false })
-      if (result.data) {
-        api.route.navigate("session", { sessionID })
+      const native = await ctx.client.session.get({ sessionID })
+      if (sessionIDOf(native)) {
+        ctx.ui.router.navigate({ type: "session", sessionID })
         return
       }
-      const status = result.response?.status
-      if (status !== 404) {
-        throw result.error ?? new Error(`Session lookup failed (${status ?? "no response"})`)
-      }
-      select(sessionID)
-      api.route.navigate(`${route}.session`, { sessionID })
+      openDetail(sessionID)
     } catch (error) {
-      api.ui.toast({
+      if (statusOf(error) === 404) {
+        openDetail(sessionID)
+        return
+      }
+      ctx.ui.toast.show({
         variant: "error",
         title: "subplug",
         message: error instanceof Error ? error.message : "Session lookup failed",

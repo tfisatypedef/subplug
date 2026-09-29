@@ -3,8 +3,8 @@ import { spawnSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { Hooks, PluginInput } from "@opencode-ai/plugin"
-import serverModule from "../src/server/index.ts"
+import { setupServer } from "../src/server/index.ts"
+import { makeV2Context, type V2Fake } from "./v2-context.ts"
 
 const PROJECT_ID = "lease-hook-project"
 const cleanups: Array<() => void> = []
@@ -80,41 +80,22 @@ function leaseCalls(repo: string): Array<{ agent: string; session: string; paths
     .map((line) => JSON.parse(line) as { agent: string; session: string; paths: string[] })
 }
 
-async function startPlugin(repo: string, stateDir: string): Promise<Hooks> {
-  delete process.env.COORD_AGENT_ID
-  const input = {
-    client: {
-      path: { get: async () => ({ data: { state: stateDir } }) },
-      session: {
-        list: async () => ({ data: [] }),
-        status: async () => ({ data: {} }),
-        todo: async () => ({ data: [] }),
-        messages: async () => ({ data: [] }),
-        prompt: async () => ({ data: {} }),
-      },
-    },
-    project: { id: PROJECT_ID },
-    directory: repo,
-    worktree: repo,
-    experimental_workspace: { register() {} },
-    serverUrl: new URL("http://127.0.0.1:1"),
-    $: Bun.$,
-  } as unknown as PluginInput
-  return serverModule.server(input, { coord: { injectIdentity: true }, storageDir: stateDir })
+async function startPlugin(repo: string, stateDir: string): Promise<V2Fake> {
+  const fake = makeV2Context({ coord: { injectIdentity: true }, storageDir: stateDir }, repo, PROJECT_ID)
+  const stop = await setupServer(fake.ctx)
+  cleanups.push(stop)
+  return fake
 }
 
-describe("server plugin lease enforcement", () => {
+describe("v2 server lease enforcement", () => {
   leaseTest("denies an edit when another session holds the lease", async () => {
     const repo = seedRepo(true)
     const stateDir = tempDir("state-")
-    const hooks = await startPlugin(repo, stateDir)
+    const fake = await startPlugin(repo, stateDir)
     writeFileSync(join(repo, "lease-deny"), "1\n")
 
     await expect(
-      hooks["tool.execute.before"]?.(
-        { tool: "edit", sessionID: "ses_edit000000001", callID: "call-edit" },
-        { args: { filePath: "src/app.py" } },
-      ),
+      fake.runToolBefore({ tool: "edit", sessionID: "ses_edit000000001", input: { filePath: "src/app.py" } }),
     ).rejects.toThrow("is leased by other@host")
 
     const calls = leaseCalls(repo)
@@ -127,12 +108,9 @@ describe("server plugin lease enforcement", () => {
   leaseTest("allows a write after acquiring the lease", async () => {
     const repo = seedRepo(true)
     const stateDir = tempDir("state-")
-    const hooks = await startPlugin(repo, stateDir)
+    const fake = await startPlugin(repo, stateDir)
 
-    await hooks["tool.execute.before"]?.(
-      { tool: "write", sessionID: "ses_write00000001", callID: "call-write" },
-      { args: { filePath: "src/new.py", content: "x" } },
-    )
+    await fake.runToolBefore({ tool: "write", sessionID: "ses_write00000001", input: { filePath: "src/new.py", content: "x" } })
 
     const calls = leaseCalls(repo)
     expect(calls.length).toBe(1)
@@ -142,23 +120,22 @@ describe("server plugin lease enforcement", () => {
   leaseTest("leases apply_patch add, move, and delete paths", async () => {
     const repo = seedRepo(true)
     const stateDir = tempDir("state-")
-    const hooks = await startPlugin(repo, stateDir)
+    const fake = await startPlugin(repo, stateDir)
 
-    await hooks["tool.execute.before"]?.(
-      { tool: "apply_patch", sessionID: "ses_patch00000001", callID: "call-patch" },
-      {
-        args: {
-          patchText: [
-            "*** Begin Patch",
-            "*** Add File: src/new.py",
-            "*** Update File: src/app.py",
-            "*** Move to: src/moved.py",
-            "*** Delete File: src/old.py",
-            "*** End Patch",
-          ].join("\n"),
-        },
+    await fake.runToolBefore({
+      tool: "apply_patch",
+      sessionID: "ses_patch00000001",
+      input: {
+        patchText: [
+          "*** Begin Patch",
+          "*** Add File: src/new.py",
+          "*** Update File: src/app.py",
+          "*** Move to: src/moved.py",
+          "*** Delete File: src/old.py",
+          "*** End Patch",
+        ].join("\n"),
       },
-    )
+    })
 
     const calls = leaseCalls(repo)
     expect(calls.length).toBe(1)
@@ -168,12 +145,9 @@ describe("server plugin lease enforcement", () => {
   test("skips enforcement outside coordination-enabled repositories", async () => {
     const repo = seedRepo(false)
     const stateDir = tempDir("state-")
-    const hooks = await startPlugin(repo, stateDir)
+    const fake = await startPlugin(repo, stateDir)
 
-    await hooks["tool.execute.before"]?.(
-      { tool: "edit", sessionID: "ses_plain00000001", callID: "call-plain" },
-      { args: { filePath: "src/app.py" } },
-    )
+    await fake.runToolBefore({ tool: "edit", sessionID: "ses_plain00000001", input: { filePath: "src/app.py" } })
 
     expect(() => leaseCalls(repo)).toThrow()
   })
@@ -181,12 +155,9 @@ describe("server plugin lease enforcement", () => {
   test("does not lease bash tool calls", async () => {
     const repo = seedRepo(true)
     const stateDir = tempDir("state-")
-    const hooks = await startPlugin(repo, stateDir)
+    const fake = await startPlugin(repo, stateDir)
 
-    await hooks["tool.execute.before"]?.(
-      { tool: "bash", sessionID: "ses_bash000000001", callID: "call-bash" },
-      { args: { command: "ls -la" } },
-    )
+    await fake.runToolBefore({ tool: "bash", sessionID: "ses_bash000000001", input: { command: "ls -la" } })
 
     expect(() => leaseCalls(repo)).toThrow()
   })
