@@ -418,7 +418,7 @@ logic; the harness only proves hooks fire and pointers land.
 | `swarm_status` session detail (`session`, opt-in `messages`) | done | `test/server.test.ts` (detail + message gating) |
 | TUI selection + `subplug.session` detail route | load-verified | TUI marker from `--tui`; visual check pending |
 | TUI sidebar/route/risk toast (SolidJS) | load-verified | TUI marker from `--tui`; `--demo` seed for visual check |
-| Real `task` subagent run | user-run | prompt + `--inspect` documented in README |
+| Real `task` subagent run | user-run | prompt + `--inspect --expect-subagent` documented in README; the assert exits non-zero unless a subagent with a recovered parent/agent pair is folded |
 | Visual TUI + toast/attention behavior | user-run | `--demo` + `--poke-risk` documented in README |
 | Harness robustness (random port, stale kill, retry, XDG isolation) | done | baseline spike stable; zombie cause documented |
 | Probe: busy-session admission + v1/v2 store split | done | `--probe-comms` (see results) |

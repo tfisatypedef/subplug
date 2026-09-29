@@ -300,10 +300,12 @@ With the TUI (or `opencode` in general) open in `.harness/repo`, prompt:
 Then inspect the hub without leaving the repo:
 
 ```sh
-bun run scripts/dev-harness.ts --inspect
+bun run scripts/dev-harness.ts --inspect --expect-subagent
 ```
 
 Expected: the root identity is `Harness Agent@<host>/<rootID>`; the child shows
 `parent=<root id>`, `kind=subagent`, and identity
 `Harness Agent@<host>/<childID>`; claims list `⇄ <session>` when the
-session identity matches a claim's agent.
+session identity matches a claim's agent. `--expect-subagent` prints `PASS`
+with the recovered parent/agent pair and exits non-zero when no such subagent
+was folded, so the live `task` check is scriptable.

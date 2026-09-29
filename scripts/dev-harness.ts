@@ -23,6 +23,7 @@ const tuiOnly = process.argv.includes("--tui")
 const demoMode = process.argv.includes("--demo")
 const pokeRisk = process.argv.includes("--poke-risk")
 const inspectMode = process.argv.includes("--inspect")
+const expectSubagent = process.argv.includes("--expect-subagent")
 const probeComms = process.argv.includes("--probe-comms")
 const probeTuiState = process.argv.includes("--probe-tui-state")
 const probeInject = process.argv.includes("--probe-inject")
@@ -134,7 +135,7 @@ function hubRoots(): string[] {
   if (!existsSync(baseDir)) return []
   return readdirSync(baseDir)
     .map((name) => join(baseDir, name))
-    .filter((dir) => existsSync(dir))
+    .filter((dir) => statSync(dir, { throwIfNoEntry: false })?.isDirectory() === true)
 }
 
 function hubDirsByRecency(): string[] {
@@ -397,11 +398,15 @@ function runInspect(): void {
     log("no hub found; run `--demo` or the server spike first")
     process.exit(1)
   }
+  let taskChild: { sessionID: string; parentID: string; agent: string } | undefined
   for (const dir of dirs) {
     const state = readMonitorState(dir, repoDir)
     log(`hub ${dir}`)
     log(`sessions: ${state.sessions.length}`)
     for (const session of state.sessions) {
+      if (!taskChild && session.kind === "subagent" && session.parentID && session.agent) {
+        taskChild = { sessionID: session.sessionID, parentID: session.parentID, agent: session.agent }
+      }
       log(
         `  [${session.kind}] ${session.sessionID} parent=${session.parentID ?? "-"} identity=${session.identity ?? "-"} status=${session.status} agent=${session.agent ?? "-"} title=${session.title ?? "-"}`,
       )
@@ -416,6 +421,14 @@ function runInspect(): void {
     for (const risk of state.risks) {
       log(`  risk[${risk.category}] ${risk.summary}`)
     }
+  }
+  if (expectSubagent) {
+    if (taskChild) {
+      log(`PASS: task subagent ${taskChild.sessionID} parent=${taskChild.parentID} agent=${taskChild.agent}`)
+      return
+    }
+    process.stderr.write("[harness] FAIL: no subagent with a recovered parent/agent pair found\n")
+    process.exit(1)
   }
 }
 
