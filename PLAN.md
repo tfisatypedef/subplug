@@ -10,9 +10,10 @@ implemented**. Server tap, session fold, coord bridge, `swarm_status`
 command center (filter tabs, grouping, search, help, details pane) with
 Enter-to-switch, a store-backed transcript, session cost folding,
 the TUI composer/inbox, a timeout-guarded state-dir fallback, and a shared-hub
-`hubGroup` are in place. Remaining: live `task`-subagent observation and visual
-TUI checks (see "Implementation status"), the optional web view, and final
-packaging (publish decision).
+`hubGroup` are in place. Publish prep is done (0.1.0, `files` whitelist,
+`prepublishOnly`, `bun run canary`); remaining: live `task`-subagent
+observation and visual TUI checks (see "Implementation status"), the optional
+web view, and the actual npm publish decision.
 
 Follow-up context: the dashboard and detail offer `f`/`m` plus a clickable
 **[f] Follow up** action. TUI and tool sends share delivery logic: check live
@@ -172,7 +173,9 @@ subplug/
 ## Risks
 
 - Plugin API drift: depend on `^1.18.32` (lockfile at 1.18.33), keep the
-  renderer stack as host-provided peers, and add a canary check.
+  renderer stack as host-provided peers. Resolved for now: `bun run canary`
+  checks the host binary against the declared range (`--load` also runs the TUI
+  load harness), and `prepublishOnly` gates typecheck + tests.
 - TUI slot/API stability; attention sounds are new surface.
 - SolidJS (`@opentui/solid`) renderer is unfamiliar territory vs React.
 - `shell.env` `sessionID` is optional (`index.d.ts:242-248`); identity injection
@@ -424,6 +427,7 @@ logic; the harness only proves hooks fire and pointers land.
 | P5 comms implementation | done | `test/comms.test.ts` pure helpers; `swarm_send` + inbox-pull tests in `test/server.test.ts`; injection `--probe-inject`; TUI composer/inbox `--tui` load; visual check user-run |
 | Probe: injection part persistence + `comms.delivered` | done | `--probe-inject` (see results) |
 | P6 cross-process + portability | partial | state-dir timeout guard + hang test; multi-server fold test; `hubGroup` in server + TUI; CI (`.github/workflows/ci.yml`), `.gitattributes`, LICENSE, `bun.lock`, engines already present; web view not started |
+| Publish prep (npm) | done | `0.1.0`; `private` dropped and `files` whitelists `src`/README/LICENSE; `@opentui/*` + `solid-js` are optional peers with dev deps kept; `@opencode-ai/plugin` `^1.18.32` (lockfile 1.18.33); `prepublishOnly` runs typecheck + tests; `bun run canary` checks the host binary against the range and `--load` runs the TUI harness (8 tests, `test/canary.test.ts`); CI `pack` job asserts the tarball contents and the `canary` job installs the current `opencode-ai`, then runs `canary --load`; local opencode clone restored to upstream |
 | P6 review fixes | done | degenerate hub keys -> `unknown`; non-positive timeout guard; globally newest record limit; `EventTail` fresh-comms injection; spike/`--tui`/`--probe-inject` green |
 | TUI layout + sidebar affordance | done | rows/panels constrained to full width, conversation clipped; explicit `flexShrink={0}` on labels/rows/panels stops auto-shrink overlap on short terminals (`flexShrink` defaults to 1 for auto dimensions); sidebar is a themed square `scrollbox`, 36 cells wide with the row count derived from the terminal cell aspect (pixel resolution, else `sidebarAspect`, clamped 11–24 rows) so it looks square in pixels rather than cells; last 5 sessions as single-line truncated rows, click-to-open; `test/tui.test.tsx` covers the pixel-square dimensions, aspect/fallback/clamp math, the 5-session cap, no-wrap rows, theme-token colors, hint, and click-to-open; `bunfig.toml` preloads the Solid compiler so rendered updates are reactive |
 | Edit-lease enforcement | done | auto-acquire/refresh via `tools/coord.py lock` for `edit`/`write`/`apply_patch`; `apply_patch` scans add/update/delete plus both sides of a move; denial thrown from `tool.execute.before` outside the monitoring catch; full-session-id identity with a per-repository base cache; `test/leases.test.ts` + `test/lease-enforcement.test.ts` |
@@ -497,7 +501,10 @@ dead, so a competitor replaces the lease instead of being denied.
 > `tool.execute.before` (outside the monitoring catch), `apply_patch` scans
 > add/update/delete and both sides of a move, and every session now identifies
 > as `<name>@<host>/<full session id>` with the base cached per repository.
-> Remaining P6: the optional web view and the publish decision.
+> Remaining P6: the optional web view and the actual npm publish. Publish prep
+> is done: version 0.1.0, `files` whitelist, optional `@opentui/*`/`solid-js`
+> peers, `prepublishOnly` gate, `bun run canary` (host range + optional
+> `--load` TUI harness), and a CI `pack` job.
 > Keep using the flat client for v1 sessions (never the v2 `/api/session`
 > store), read transcripts from `api.state.session.messages()`/`part()` when
 > the store has content, keep `client.path.get()` out of eager plugin init, and

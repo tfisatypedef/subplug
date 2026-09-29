@@ -233,6 +233,8 @@ and send it this follow-up with `swarm_send`.”
 bun install
 bun run typecheck
 bun test
+bun run canary                                # host opencode satisfies ^1.18.32 + plugin API line
+bun run canary --load                         # canary plus the headless TUI load harness
 bun run scripts/dev-harness.ts                 # headless server spike (scratch config + repo)
 bun run scripts/dev-harness.ts --tui           # headless TUI load check (marker file)
 bun run scripts/dev-harness.ts --probe-comms   # busy-session admission + v1/v2 store split
@@ -249,6 +251,15 @@ The harness seeds a `coordination/claims` registry, starts a throwaway
 `opencode serve` under a scratch `OPENCODE_CONFIG_DIR`, creates a root and a
 child session, probes `COORD_AGENT_ID` through `session.shell`, and checks the
 session tree, identity suffixes, and `swarm_status` registration.
+
+### Publishing
+
+`prepublishOnly` runs `typecheck` + `test`, so a broken tree cannot ship.
+Before publishing, run `bun run canary --load` against the current opencode,
+bump `version` in `package.json`, then `npm publish` (the `files` whitelist
+ships only `src`, `README.md`, and `LICENSE`). CI verifies the tarball in the
+`pack` job and runs `canary --load` against the latest npm-hosted opencode in
+the `canary` job.
 
 ## Manual verification
 

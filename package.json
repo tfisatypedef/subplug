@@ -1,6 +1,6 @@
 {
   "name": "subplug",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "type": "module",
   "description": "Monitor other opencode sessions and subagents, overlaid with the coordination/ claim registry, with queue-only addressed comms.",
   "license": "MIT",
@@ -37,10 +37,12 @@
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "harness": "bun run scripts/dev-harness.ts"
+    "harness": "bun run scripts/dev-harness.ts",
+    "canary": "bun run scripts/canary.ts",
+    "prepublishOnly": "bun run typecheck && bun test"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^1.18.33"
+    "@opencode-ai/plugin": "^1.18.32"
   },
   "peerDependencies": {
     "@opentui/core": ">=0.4.5",
@@ -63,7 +65,7 @@
     }
   },
   "devDependencies": {
-    "@opencode-ai/sdk": "^1.18.33",
+    "@opencode-ai/sdk": "^1.18.32",
     "@opentui/core": "0.5.12",
     "@opentui/keymap": "0.5.12",
     "@opentui/solid": "0.5.12",

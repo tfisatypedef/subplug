@@ -7,6 +7,7 @@ import { readEventRecords, EventLog } from "../src/hub/append.ts"
 import { foldSessions } from "../src/hub/fold.ts"
 import { joinClaimsToSessions, readMonitorState } from "../src/hub/monitor.ts"
 import type { EventRecord } from "../src/shared/types.ts"
+import { resolveOpencodeBin } from "./opencode-bin.ts"
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const harnessDir = join(root, ".harness")
@@ -35,21 +36,6 @@ const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms))
 
 function log(message: string): void {
   process.stdout.write(`[harness] ${message}\n`)
-}
-
-function resolveOpencodeBin(): string {
-  if (process.env.OPENCODE_BIN) return process.env.OPENCODE_BIN
-  const probe = spawnSync(process.platform === "win32" ? "where.exe" : "which", ["opencode"], {
-    encoding: "utf8",
-  })
-  for (const raw of (probe.stdout ?? "").split(/\r?\n/)) {
-    const candidate = raw.trim()
-    if (!candidate) continue
-    if (candidate.toLowerCase().endsWith(".exe")) return candidate
-    const exe = join(dirname(candidate), "node_modules", "opencode-ai", "bin", "opencode.exe")
-    if (existsSync(exe)) return exe
-  }
-  return process.platform === "win32" ? "opencode.exe" : "opencode"
 }
 
 function seedRepo(): void {

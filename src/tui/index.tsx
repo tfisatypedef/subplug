@@ -2,6 +2,7 @@
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { randomUUID } from "node:crypto"
+import pkg from "../../package.json"
 import type { KeyEvent, RGBA, Renderable } from "@opentui/core"
 import { createBindingLookup, type BindingConfig } from "@opentui/keymap/extras"
 import { createEffect, createSignal, onCleanup } from "solid-js"
@@ -769,7 +770,7 @@ const tui: TuiPlugin = async (api, options) => {
     mkdirSync(markerDir, { recursive: true })
     writeFileSync(
       join(markerDir, "tui-plugin-loaded.json"),
-      `${JSON.stringify({ at: Date.now(), route: cfg.route, command: cfg.command, version: "0.0.1" })}\n`,
+      `${JSON.stringify({ at: Date.now(), route: cfg.route, command: cfg.command, version: pkg.version })}\n`,
     )
   } catch {
     // the marker is diagnostic only

@@ -23,6 +23,20 @@ jobs:
       - name: Test
         run: bun test
 
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install
+        run: bun install --frozen-lockfile
+      - name: Install current opencode
+        run: npm install -g opencode-ai
+      - name: Canary against the installed host
+        run: bun run canary --load
+
   pack:
     runs-on: ubuntu-latest
     steps:
