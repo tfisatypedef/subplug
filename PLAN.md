@@ -169,7 +169,8 @@ subplug/
   injection is a no-op with an empty inbox; harness probes pass (see below).
 - **P6+ — cross-process.** Aggregate multiple clones/windows; optional web view.
   Partial: windows on the same project share a hub automatically; clones
-  aggregate via a shared `storageDir` + `hubGroup`; the web view is not started.
+  aggregate via a shared `storageDir` + `hubGroup`; the web view is implemented
+  (see "P6 web view").
 
 ## Risks
 
@@ -547,8 +548,9 @@ dead, so a competitor replaces the lease instead of being denied.
 > `tool.execute.before` (outside the monitoring catch), `apply_patch` scans
 > add/update/delete and both sides of a move, and every session now identifies
 > as `<name>@<host>/<full session id>` with the base cached per repository.
-> Remaining P6: the optional web view and the actual npm publish. Publish prep
-> is done: version 0.1.0, `files` whitelist, optional `@opentui/*`/`solid-js`
+> Remaining P6: the actual npm publish. The web view is implemented
+> (`src/server/web.ts`, `web.enabled`, localhost GET-only); publish prep is
+> done: version 0.1.0, `files` whitelist, optional `@opentui/*`/`solid-js`
 > peers, `prepublishOnly` gate, `bun run canary` (host range + optional
 > `--load` TUI harness), and a CI `pack` job.
 > Keep using the flat client for v1 sessions (never the v2 `/api/session`
