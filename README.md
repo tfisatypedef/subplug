@@ -5,9 +5,12 @@ and subagents working in a project, overlaid with the `coordination/` claim
 registry. Viewing is read-only. An opt-out, queue-only comms tier can send
 addressed messages between sessions: no abort, no steer, no broadcast.
 
-Compatible with opencode `1.18.32` (`@opencode-ai/plugin` pinned).
+Compatible with opencode `1.18.x` (`@opencode-ai/plugin` `^1.18.32`, lockfile
+tested against `1.18.33`). The TUI renderer packages (`@opentui/*`,
+`solid-js`) are declared as optional peer dependencies, so the host's copies
+are used and no duplicate Solid instance is installed.
 
-Requirements: [Bun](https://bun.sh) `>= 1.3` (for install/dev) and
+Requirements: [Bun](https://bun.sh) `>= 1.3` (for local dev) and
 opencode `1.18.x`.
 
 ## Install
@@ -16,13 +19,11 @@ opencode discovers both entrypoints from `package.json` `exports["./server"]`
 and `exports["./tui"]`, so one spec installs the server and TUI plugins
 together. The `opencode plugin` command patches both config files for you.
 
-### From a clone (GitHub download)
+### From npm
 
 ```sh
-git clone https://github.com/tfisatypedef/subplug.git ~/src/subplug
-cd ~/src/subplug && bun install          # runtime deps for both entrypoints
 cd /path/to/your/project
-opencode plugin ~/src/subplug            # absolute path to the clone
+opencode plugin subplug
 ```
 
 ```
@@ -34,10 +35,13 @@ opencode plugin ~/src/subplug            # absolute path to the clone
 Restart opencode afterwards. Add `--global` to install into the global config
 instead of the project, or `--force` to replace an existing entry.
 
-### From npm (once published)
+### From a local clone (development)
 
 ```sh
-opencode plugin subplug
+git clone https://github.com/tfisatypedef/subplug.git ~/src/subplug
+cd ~/src/subplug && bun install          # runtime + test deps
+cd /path/to/your/project
+opencode plugin ~/src/subplug            # absolute path to the clone
 ```
 
 ### Manual config
@@ -69,8 +73,10 @@ Path plugins must default-export an object with `id` plus either `server` or
 
 ### Update / remove
 
-- Update: `cd /path/to/subplug && git pull && bun install`, then restart
-  opencode (re-run `opencode plugin --force <spec>` if options changed).
+- Update (npm): `opencode plugin --force subplug`, then restart opencode. The
+  config entry is unchanged when the version moves.
+- Update (clone): `cd /path/to/subplug && git pull && bun install`, then
+  restart opencode (re-run `opencode plugin --force <spec>` if options changed).
 - Remove: delete the `plugin` entry from `.opencode/opencode.json` and
   `.opencode/tui.json` (or the global equivalents).
 
@@ -85,6 +91,7 @@ Path plugins must default-export an object with `id` plus either `server` or
 | `retentionBytes` | 4 MiB | Rotate `events.<server>.jsonl` at this size (one `.1` segment kept). |
 | `maxAgeMs` | 24 h | Ignore records older than this when folding. |
 | `intervalMs` (TUI) | 1000 | Hub poll interval. |
+| `sidebarAspect` (TUI) | 0.5 | Fallback cell width/height ratio for the Agents panel when the terminal doesn't report pixel resolution (rows = `round(36 × aspect)`, clamped 11–24). |
 | `route` / `command` (TUI) | `subplug` / `subplug.open` | Dashboard route name and palette command. |
 
 ## What gets recorded
@@ -153,9 +160,13 @@ the request.
 
 ## TUI
 
-- Sidebar slot **Agents** (order 650, below the internal blocks): the last 8
-  sessions, status marks, the current session marker, and the active-claim
-  count.
+- Sidebar slot **Agents** (order 650, below the internal blocks): a visually
+  square panel — 36 cells wide, height derived from the terminal's cell aspect
+  (pixel resolution when the terminal reports it, otherwise `sidebarAspect`)
+  and clamped to 11–24 rows — themed with the active opencode theme, listing
+  the last 5 sessions with single-line truncated titles, status marks, the
+  current session marker, and the active-claim count. Clicking it opens the
+  command center.
 - Dashboard route `subplug` — a codex-style **command center**: status filter
   tabs (`All / Needs you / Working / Ready / Inactive` with counts), grouping by
   Project / Status / Agent / Hierarchy (default Project; Hierarchy keeps the

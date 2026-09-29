@@ -62,7 +62,13 @@ function stubApi(width = WIDTH, height = HEIGHT): TuiPluginApi {
     kv: { get: () => [], set: () => undefined },
     keymap: { registerLayer: () => () => undefined },
     route: { current: { name: "home" } },
-    renderer: { width, height },
+    renderer: {
+      width,
+      height,
+      terminalWidth: width,
+      terminalHeight: height,
+      resolution: { width: width * 8, height: height * 16 },
+    },
     ui: { dialog: { open: false } },
     state: {
       session: { get: () => undefined, permission: () => [], question: () => [] },
@@ -257,8 +263,15 @@ describe("subplug TUI layout", () => {
   test("sidebar shows the open hint and forwards clicks", async () => {
     let opened = 0
     const setup = await testRender(
-      () => <Sidebar state={monitorState} sessionID="ses_root00000001" onOpen={() => (opened += 1)} />,
-      { width: 40, height: 12 },
+      () => (
+        <Sidebar
+          api={stubApi(40, 42)}
+          state={monitorState}
+          sessionID="ses_root00000001"
+          onOpen={() => (opened += 1)}
+        />
+      ),
+      { width: 40, height: 42 },
     )
     await setup.flush()
     expect(setup.captureCharFrame()).toContain("ctrl+alt+a")
@@ -267,6 +280,100 @@ describe("subplug TUI layout", () => {
     await setup.renderOnce()
     expect(opened).toBe(1)
     setup.renderer.destroy()
+  })
+
+  test("sidebar renders a square, themed panel capped at five sessions", async () => {
+    const sessions = Array.from({ length: 8 }, (_, index) =>
+      session({
+        sessionID: `ses_${String(index).padStart(12, "0")}`,
+        title: `session ${String(index).padStart(2, "0")}`,
+        lastEventAt: 1000 + index,
+      }),
+    )
+    const state: MonitorState = { ...monitorState(), sessions }
+    const theme = { ...stubApi().theme.current, text: "#123456", textMuted: "#654321" }
+    const api = { ...stubApi(42, 40), theme: { ...stubApi().theme, current: theme } } as unknown as TuiPluginApi
+    const setup = await testRender(
+      () => (
+        <Sidebar api={api} state={() => state} sessionID="ses_000000000007" onOpen={() => undefined} />
+      ),
+      { width: 42, height: 40 },
+    )
+    await setup.flush()
+    const frame = setup.captureCharFrame()
+    const lines = frame.split("\n")
+    const top = lines.find((line) => line.includes("┌") && line.includes("┐"))
+    const bottom = lines.find((line) => line.includes("└") && line.includes("┘"))
+    expect(top).toBeDefined()
+    expect(bottom).toBeDefined()
+    expect((top?.indexOf("┐") ?? 0) - (top?.indexOf("┌") ?? 0) + 1).toBe(36)
+    expect((bottom ? lines.indexOf(bottom) : 0) - (top ? lines.indexOf(top) : 0) + 1).toBe(18)
+    expect(frame).toContain("session 03")
+    expect(frame).toContain("session 07")
+    expect(frame).not.toContain("session 00")
+    expect(frame).not.toContain("session 01")
+    expect(frame).not.toContain("session 02")
+    expect(frame.match(/session 03/g)?.length).toBe(1)
+
+    const texts = (node: import("@opentui/core").Renderable): TextRenderable[] =>
+      node instanceof TextRenderable ? [node] : node.getChildren().flatMap(texts)
+    const rendered = texts(setup.renderer.root)
+    expect(rendered.find((line) => line.plainText.includes("Agents"))?.fg.equals(RGBA.fromHex("#123456"))).toBe(true)
+    expect(rendered.find((line) => line.plainText.includes("session 03"))?.fg.equals(RGBA.fromHex("#654321"))).toBe(true)
+    setup.renderer.destroy()
+  })
+
+  test("sidebar derives its height from the terminal cell aspect", async () => {
+    const base = stubApi(42, 40)
+    const tall = {
+      ...base,
+      renderer: {
+        ...base.renderer,
+        resolution: { width: 42 * 8, height: 40 * 23 },
+      },
+    } as unknown as TuiPluginApi
+    const setup = await testRender(
+      () => <Sidebar api={tall} state={monitorState} sessionID="ses_root00000001" onOpen={() => undefined} />,
+      { width: 42, height: 40 },
+    )
+    await setup.flush()
+    const lines = setup.captureCharFrame().split("\n")
+    const top = lines.find((line) => line.includes("┌") && line.includes("┐"))
+    const bottom = lines.find((line) => line.includes("└") && line.includes("┘"))
+    expect((top?.indexOf("┐") ?? 0) - (top?.indexOf("┌") ?? 0) + 1).toBe(36)
+    expect((bottom ? lines.indexOf(bottom) : 0) - (top ? lines.indexOf(top) : 0) + 1).toBe(13)
+    setup.renderer.destroy()
+  })
+
+  test("sidebar aspect falls back and clamps when the terminal reports no pixels", async () => {
+    const base = stubApi(42, 40)
+    const noPixels = {
+      ...base,
+      renderer: { ...base.renderer, resolution: null },
+    } as unknown as TuiPluginApi
+    const heightOf = async (aspect: number) => {
+      const setup = await testRender(
+        () => (
+          <Sidebar
+            api={noPixels}
+            aspect={aspect}
+            state={monitorState}
+            sessionID="ses_root00000001"
+            onOpen={() => undefined}
+          />
+        ),
+        { width: 42, height: 40 },
+      )
+      await setup.flush()
+      const lines = setup.captureCharFrame().split("\n")
+      const top = lines.find((line) => line.includes("┌") && line.includes("┐"))
+      const bottom = lines.find((line) => line.includes("└") && line.includes("┘"))
+      const value = (bottom ? lines.indexOf(bottom) : 0) - (top ? lines.indexOf(top) : 0) + 1
+      setup.renderer.destroy()
+      return value
+    }
+    expect(await heightOf(0.2)).toBe(11)
+    expect(await heightOf(0.9)).toBe(24)
   })
 
   test("details mark joined claims and color conflicting claims", async () => {

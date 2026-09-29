@@ -25,9 +25,16 @@ child links, agent names, and models even if creation events were missed.
 
 ## Locked decisions
 
-- **API**: v1 server hooks + v1 TUI plugin, pinned to `@opencode-ai/plugin` /
-  `@opencode-ai/sdk` `1.18.32` (the installed runtime). The experimental
+- **API**: v1 server hooks + v1 TUI plugin. `@opencode-ai/plugin` depends on
+  `^1.18.32` (lockfile resolved and tested against `1.18.33`, the current
+  runtime); the dev-only SDK follows the same range. `@opentui/*` and
+  `solid-js` are optional **peer** dependencies so an npm install uses the
+  host's renderer and Solid instances, never a duplicate copy. The experimental
   `./v2/effect` API is not used unless a demonstrated need appears.
+- **Delivery**: features ship only through the plugin API. Never patch, build,
+  or require a local opencode checkout; the package is npm-installable (no
+  `private`, `files` whitelists `src`). The dev harness may use a local
+  `opencode` binary, but nothing in the plugin runtime may.
 - **Module shape**: server and TUI are two entries, not one. The type surface
   is mutually exclusive — `PluginModule = { server; tui?: never }` and
   `TuiPluginModule = { tui; server?: never }` — so `src/server/index.ts` and
@@ -74,7 +81,7 @@ child links, agent names, and models even if creation events were missed.
 - Docs: `https://opencode.ai/docs/plugins/`, `/docs/sdk`, `/docs/config`.
   TUI settings live in `tui.json` (global or project), schema
   `https://opencode.ai/tui.json`.
-- Local type files to mirror (opencode 1.18.32): the installed
+- Local type files to mirror (opencode 1.18.33): the installed
   `@opencode-ai/plugin` `dist/{index,tui}.d.ts` and `@opencode-ai/sdk`
   `dist/gen/types.gen.d.ts`.
 - Server hooks: `event` (global bus), `tool.execute.before/after`
@@ -95,7 +102,7 @@ child links, agent names, and models even if creation events were missed.
 
 ```
 subplug/
-  package.json           # bun; @opencode-ai/plugin pinned 1.18.32; @opentui/* for TUI types
+  package.json           # bun; @opencode-ai/plugin ^1.18.32; @opentui/* + solid-js peers (host-provided)
   tsconfig.json
   src/server/index.ts    # event tap -> hub; shell.env identity inject; swarm_status tool
   src/tui/index.tsx      # plugin wiring, sidebar slot, detail route, toasts/attention
@@ -164,7 +171,8 @@ subplug/
 
 ## Risks
 
-- Plugin API drift: pin 1.18.32 and add a canary check.
+- Plugin API drift: depend on `^1.18.32` (lockfile at 1.18.33), keep the
+  renderer stack as host-provided peers, and add a canary check.
 - TUI slot/API stability; attention sounds are new surface.
 - SolidJS (`@opentui/solid`) renderer is unfamiliar territory vs React.
 - `shell.env` `sessionID` is optional (`index.d.ts:242-248`); identity injection
@@ -417,7 +425,7 @@ logic; the harness only proves hooks fire and pointers land.
 | Probe: injection part persistence + `comms.delivered` | done | `--probe-inject` (see results) |
 | P6 cross-process + portability | partial | state-dir timeout guard + hang test; multi-server fold test; `hubGroup` in server + TUI; CI (`.github/workflows/ci.yml`), `.gitattributes`, LICENSE, `bun.lock`, engines already present; web view not started |
 | P6 review fixes | done | degenerate hub keys -> `unknown`; non-positive timeout guard; globally newest record limit; `EventTail` fresh-comms injection; spike/`--tui`/`--probe-inject` green |
-| TUI layout + sidebar affordance | done | rows/panels constrained to full width, conversation clipped; explicit `flexShrink={0}` on labels/rows/panels stops auto-shrink overlap on short terminals (`flexShrink` defaults to 1 for auto dimensions); sidebar hint + click-to-open; `test/tui.test.tsx` layout/click/short-terminal tests; `bunfig.toml` preloads the Solid compiler so rendered updates are reactive |
+| TUI layout + sidebar affordance | done | rows/panels constrained to full width, conversation clipped; explicit `flexShrink={0}` on labels/rows/panels stops auto-shrink overlap on short terminals (`flexShrink` defaults to 1 for auto dimensions); sidebar is a themed square `scrollbox`, 36 cells wide with the row count derived from the terminal cell aspect (pixel resolution, else `sidebarAspect`, clamped 11–24 rows) so it looks square in pixels rather than cells; last 5 sessions as single-line truncated rows, click-to-open; `test/tui.test.tsx` covers the pixel-square dimensions, aspect/fallback/clamp math, the 5-session cap, no-wrap rows, theme-token colors, hint, and click-to-open; `bunfig.toml` preloads the Solid compiler so rendered updates are reactive |
 | Edit-lease enforcement | done | auto-acquire/refresh via `tools/coord.py lock` for `edit`/`write`/`apply_patch`; `apply_patch` scans add/update/delete plus both sides of a move; denial thrown from `tool.execute.before` outside the monitoring catch; full-session-id identity with a per-repository base cache; `test/leases.test.ts` + `test/lease-enforcement.test.ts` |
 | TUI command center (codex-style dashboard) | done | centralized status metadata and bundled task state in `src/tui/command-center.ts` (`test/command-center.test.ts`, 13 tests); separate dashboard, details, keymap, navigation, presentation, and transcript modules; `test/tui.test.tsx` covers layout, the previous-route current-session marker, joined-claim markers/conflict colors, reactive list search, tab/shift-tab, grouping, hierarchy-only expansion, paging/home/end, and help/back; Enter tests execute the production navigator with the generated host SDK, including cached/empty local sessions, host-client 404 fallback, and lookup failure; `/` confirms a list query and Escape clears it; header counts, click selection/filtering, and paging are documented in README; `bun test` (151 passing), `bun run typecheck`, and the installed OpenCode `--tui` load harness verified this refactor |
 

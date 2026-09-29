@@ -28,6 +28,7 @@ type Cfg = {
   command: string
   keybinds: BindingConfig<Renderable, KeyEvent> | undefined
   intervalMs: number
+  sidebarAspect: number
   storageDir: string | undefined
   hubGroup: string | undefined
 }
@@ -55,6 +56,7 @@ function config(options: Record<string, unknown> | undefined): Cfg {
     command: pick(options?.command, "subplug.open"),
     keybinds: record(options?.keybinds) ? (options.keybinds as BindingConfig<Renderable, KeyEvent>) : undefined,
     intervalMs: Math.max(250, num(options?.intervalMs, 1000)),
+    sidebarAspect: num(options?.sidebarAspect, 0.5),
     storageDir: pick(options?.storageDir, "") || pick(coord?.storageDir, "") || process.env.SUBPLUG_STORAGE_DIR || undefined,
     hubGroup: pick(options?.hubGroup, "") || pick(coord?.hubGroup, "") || process.env.SUBPLUG_HUB_GROUP || undefined,
   }
@@ -205,42 +207,90 @@ function createMonitor(api: TuiPluginApi, cfg: Cfg) {
   return state
 }
 
-export function Sidebar(props: { state: () => MonitorState; sessionID: string; onOpen: () => void }) {
+const SIDEBAR_WIDTH = 36
+const SIDEBAR_MIN_ROWS = 11
+const SIDEBAR_MAX_ROWS = 24
+const SIDEBAR_DEFAULT_ASPECT = 0.5
+
+function ellipsize(value: string, width: number): string {
+  if (value.length <= width) return value
+  return width <= 1 ? value.slice(0, width) : `${value.slice(0, width - 1)}…`
+}
+
+export function Sidebar(props: {
+  api: TuiPluginApi
+  state: () => MonitorState
+  sessionID: string
+  aspect?: number
+  onOpen: () => void
+}) {
   const snapshot = () => props.state()
+  const skin = () => skinOf(props.api)
+  const cellAspect = () => {
+    const renderer = props.api.renderer
+    const resolution = renderer?.resolution
+    const cols = renderer?.terminalWidth || renderer?.width
+    const rows = renderer?.terminalHeight || renderer?.height
+    if (resolution && cols && rows && resolution.height > 0) {
+      return resolution.width / cols / (resolution.height / rows)
+    }
+    const fallback = props.aspect ?? SIDEBAR_DEFAULT_ASPECT
+    return Number.isFinite(fallback) && fallback > 0 ? fallback : SIDEBAR_DEFAULT_ASPECT
+  }
+  const panelWidth = () => SIDEBAR_WIDTH
+  const panelHeight = () =>
+    Math.max(SIDEBAR_MIN_ROWS, Math.min(SIDEBAR_MAX_ROWS, Math.round(panelWidth() * cellAspect())))
+  const inner = () => panelWidth() - 4
+  const sessions = () => snapshot().sessions.slice(-5)
+  const activeClaims = () => snapshot().registry.claims.filter((claim) => claim.status === "active").length
+  const conflicts = () => snapshot().registry.conflicts.length
   return (
-    <box
+    <scrollbox
+      flexShrink={0}
+      width={panelWidth()}
+      height={panelHeight()}
       border
-      borderColor={"#4a4a4a"}
+      borderStyle="single"
+      borderColor={skin().border}
+      scrollY
+      viewportCulling={false}
       paddingLeft={1}
       paddingRight={1}
-      paddingTop={1}
-      paddingBottom={1}
-      flexDirection="column"
-      gap={1}
+      contentOptions={{ flexDirection: "column" }}
       onMouseDown={() => props.onOpen()}
     >
-      <text flexShrink={0} fg={"#5f87ff"}>
+      <text flexShrink={0} width={inner()} wrapMode="none" truncate fg={skin().text}>
         <b>Agents</b>
-        <span style={{ fg: "#a5a5a5" }}> subplug</span>
+        <span style={{ fg: skin().muted }}> subplug</span>
       </text>
-      {snapshot().sessions.length === 0 ? <text flexShrink={0} fg={"#a5a5a5"}>no sessions seen yet</text> : null}
-      {snapshot()
-        .sessions.slice(-8)
-        .map((session) => (
-          <text flexShrink={0} fg={session.sessionID === props.sessionID ? "#f0f0f0" : "#a5a5a5"}>
-            {session.sessionID === props.sessionID ? "▸ " : "  "}
-            {statusMark(session.status)} {session.kind === "subagent" ? "└ " : ""}
-            {sessionLabel(session)}
+      {sessions().length === 0 ? (
+        <text flexShrink={0} width={inner()} wrapMode="none" truncate fg={skin().muted}>
+          no sessions seen yet
+        </text>
+      ) : null}
+      {sessions().map((session) => {
+        const current = session.sessionID === props.sessionID
+        const prefix = current ? "▸ " : "  "
+        const kind = session.kind === "subagent" ? "└ " : ""
+        const labelWidth = Math.max(4, inner() - prefix.length - 2 - kind.length)
+        return (
+          <text flexShrink={0} width={inner()} wrapMode="none" truncate fg={current ? skin().text : skin().muted}>
+            <span style={{ fg: current ? skin().accent : skin().muted }}>{prefix}</span>
+            <span style={{ fg: statusColor(skin(), session.status) }}>{statusMark(session.status)}</span>
+            {` ${kind}${ellipsize(sessionLabel(session), labelWidth)}`}
           </text>
-        ))}
-      <text flexShrink={0} fg={"#a5a5a5"}>
-        claims {snapshot().registry.claims.filter((claim) => claim.status === "active").length} active
-        {snapshot().registry.conflicts.length > 0
-          ? ` · ${snapshot().registry.conflicts.length} conflict${snapshot().registry.conflicts.length === 1 ? "" : "s"}`
-          : ""}
+        )
+      })}
+      <text flexShrink={0} width={inner()} wrapMode="none" truncate fg={skin().muted}>
+        {`claims ${activeClaims()} active${conflicts() ? ` · ${conflicts()} conflict${conflicts() === 1 ? "" : "s"}` : ""}`}
       </text>
-      <text flexShrink={0} fg={"#5f87ff"}>click or ctrl+alt+a / /subplug to open</text>
-    </box>
+      <text flexShrink={0} width={inner()} wrapMode="none" truncate fg={skin().muted}>
+        click or ctrl+alt+a
+      </text>
+      <text flexShrink={0} width={inner()} wrapMode="none" truncate fg={skin().muted}>
+        /subplug to open
+      </text>
+    </scrollbox>
   )
 }
 
@@ -779,7 +829,15 @@ const tui: TuiPlugin = async (api, options) => {
     order: 650,
     slots: {
       sidebar_content(ctx, value) {
-        return <Sidebar state={state} sessionID={value.session_id} onOpen={openDashboard} />
+        return (
+          <Sidebar
+            api={api}
+            aspect={cfg.sidebarAspect}
+            state={state}
+            sessionID={value.session_id}
+            onOpen={openDashboard}
+          />
+        )
       },
     },
   }

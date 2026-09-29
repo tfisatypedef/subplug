@@ -22,3 +22,21 @@ jobs:
         run: bun run typecheck
       - name: Test
         run: bun test
+
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pack
+        run: npm pack
+      - name: Verify tarball contents
+        run: |
+          tar -tzf subplug-*.tgz | sed 's#^package/##' | sort > pack.txt
+          grep -qx 'package.json' pack.txt
+          grep -qx 'src/server/index.ts' pack.txt
+          grep -qx 'src/tui/index.tsx' pack.txt
+          grep -qx 'README.md' pack.txt
+          grep -qx 'LICENSE' pack.txt
+          ! grep -q '^test/' pack.txt
+          ! grep -q '^scripts/' pack.txt
+          ! grep -q '^\.harness/' pack.txt
