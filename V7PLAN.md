@@ -1,7 +1,7 @@
 # subplug V7 — remote access (brainstorm)
 
-Status: **V7.1–V7.5 implemented (V7.0 probe done); only a two-device LAN latency
-pass remains.** Open decisions answered (see "Resolved decisions"); scope locked
+Status: **V7.1–V7.5 implemented (V7.0 probe done); execution and two-device LAN
+acceptance remain pending.** Open decisions answered (see "Resolved decisions"); scope locked
 to read-only + comms with a hub-free remote. Supersedes the earlier standalone
 `subplug-v2` draft, which wrongly proposed a new plugin. subplug is **already a
 v2 plugin**; V7 is a delta on its `v2` branch, checked out in
@@ -242,3 +242,108 @@ overrides the heuristic.
 
 - Multi-server aggregation, in-plugin second-server panel, SSH auto-start,
   web-view parity, npm publish of a new package.
+
+## Remaining work specification (2026-09-29)
+
+This section is the current V7 completion checklist. V7.1–V7.5 feature code
+is implemented; the LAN acceptance has not been performed. The older probe
+results establish hydration and prompt admission, not model execution or
+event latency. The R0 tests and probe changes pass typecheck and 186 tests,
+but are still uncommitted at the time this section was written.
+
+### V7.R0 — review fixes and regression coverage
+
+Implemented: failed remote status lookups preserve `unknown` (so sending
+requires confirmation); IPv6 URL brackets are removed before local-host
+comparison; session-detail polling is cleared on disposal and late responses
+cannot update a disposed view or a different selected session.
+
+- [x] Failed-status and IPv6-loopback checks in `test/remote.test.ts`.
+- [x] Typecheck and full suite: 186 pass, 0 fail.
+- [x] Add a focused lifecycle test that closes a detail view, verifies no
+  subsequent transcript polling, and resolves an in-flight load after closing.
+- [x] Exercise an unknown remote status through the composer: cancellation
+  sends nothing; confirmation uses `queue`.
+
+Acceptance: these tests execute the production component/composer and pass
+without a provider. Keep this work within the existing TUI test fixtures.
+
+### V7.R1 — execution-capable probe
+
+Extend the development harness/probe; do not add product controls. Today
+`--probe-tui-state --attach` launches both processes on one machine and the
+probe sends `resume: false`. It is not a completed two-device test.
+
+- [x] Reuse the production remote-detection helper in the probe, including
+  IPv6 handling, rather than maintaining a second heuristic.
+- [x] Add an explicit execution mode with a selected configured model and
+  one bounded scratch task. Preserve the provider-free hydration mode.
+- [x] Add an existing-server attach mode for a client on a second device.
+  It must not seed/delete the server workspace, spawn another server, or
+  stop a server it did not create. Accept the endpoint and authentication
+  through the environment; print the exact client launch instructions.
+- [x] Subscribe before prompting; record prompt admission, execution events,
+  store status changes, transcript appearance, and cost when reported.
+- [x] Write a JSON result with host/plugin versions, session IDs, observation
+  times, durations, test outcomes, and redacted errors. Omit credentials,
+  message bodies, and full tool output. Apply bounded waits; failures exit
+  nonzero and an unavailable provider is an explicit incomplete result.
+
+Acceptance: a configured model completes a scratch run on the same machine
+through an attached TUI; the result distinguishes admission from execution,
+shows busy then idle, and confirms an assistant transcript. The probe must
+remain optional; normal tests and CI need no model credentials.
+
+Probe code and R0 tests are implemented locally. The execution acceptance and
+two-device run remain pending; neither is established by typecheck or the
+provider-free hydration mode.
+
+Local checks on opencode `2.0.20` (Windows, 2026-09-29): the provider-free
+same-machine `--attach` and client-only `--existing-server` modes both returned
+`outcome: pass`. The latter used a separately started local server and left it
+running until the test stopped it. `--probe-execute` without a model returned
+`outcome: incomplete` and a nonzero exit, as intended. These checks contain no
+model execution or LAN status-latency evidence.
+
+### V7.R2 — two-device LAN acceptance
+
+Prerequisites: R1, two devices on the LAN, a server with a configured model,
+and subplug loaded in the server and client TUI. Start the server manually
+using README's Remote attach instructions. Run the client probe against that
+server, then perform the visible UI checks on the same session.
+
+- [ ] Auto-detection selects remote; dashboard/sidebar indicate remote attach.
+  Claims/conflicts/history/inbox remain explicitly unavailable, and client
+  hub files are unchanged across monitoring and follow-up sends.
+- [ ] Observe a real root and a real task-created child with the correct
+  parent link; navigate to both and inspect their transcript updates.
+- [ ] Collect at least five busy/idle transitions across bounded runs. Measure
+  client event receipt to visible status using one client clock. Target:
+  each visible update within two configured polling intervals plus 500 ms.
+  Report missed transitions separately; do not infer network latency from
+  unsynchronized server/client clocks.
+- [ ] Verify an idle-target follow-up resumes execution; a busy-target send
+  asks for confirmation, cancellation sends nothing, and confirmation queues
+  one native message. Check eventual consumption in the target transcript.
+- [ ] Verify the applicable failure event produces one toast/attention
+  notification, and a child completion produces its completion notification.
+- [ ] Disconnect/reconnect the client: no cross-contamination with a local hub,
+  no crash, and remote sessions/transcripts recover on reattach.
+
+Acceptance: preserve a redacted JSON report plus a short manual-check record
+with device OS, versions, polling interval, outcomes, and observed limitations.
+Mark V7 complete only when this run passes. If the second device or provider
+is unavailable, retain this checklist as pending rather than substituting
+single-machine results. Any failed check gets a reproducible issue and a
+targeted fix before repeating the affected check.
+
+### Completion and next scope
+
+- [ ] Record R0–R2 evidence and update the headline completion status and test
+  count. Keep historical results intact and label their host versions.
+- [ ] Follow the v2 release checklist appended to `PLAN.md`; publishing is
+  a separate release decision and is not required to prove V7 behavior.
+
+No V8 implementation is specified here. Creating/interruption controls,
+shell/compact/model switching, multiple servers, remote claim transport,
+and SSH startup require a separate scope decision.

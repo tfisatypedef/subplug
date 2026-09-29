@@ -1119,3 +1119,118 @@ dead, so a competitor replaces the lease instead of being denied.
 > keep comms queue-only/addressed with metadata-only hub pointers. Harness
 > gotcha: random port, kill stale listeners; a zombie serve answers with stale
 > code.
+
+## Current remaining work specification (2026-09-29)
+
+This section supersedes the historical v1 "remaining" and handoff notes for
+the current `v7-remote` checkout. The v2 port and V7 feature implementation
+are present. V7 execution/LAN acceptance is specified in `V7PLAN.md` under
+"Remaining work specification"; do not count its single-machine hydration
+probe as a live model or two-device pass. Current review fixes pass typecheck
+and 186 tests and remain uncommitted as of this entry.
+
+### R1 — live v2 event and subagent contract
+
+Resolve open questions 3 and 5 using the execution-capable V7 probe and one
+real task-created child. Record the installed host and plugin versions.
+
+- [ ] Capture the event types and relevant field shapes for execution start,
+  successful completion, interruption, failure, retry, and task creation.
+  Exercise optional/failure paths only where the installed host supports
+  them; report unsupported paths explicitly.
+- [ ] Compare emitted records with `recordFor` and the TUI notification
+  subscriptions. Verify a successful run ends idle, a failed run does not
+  remain busy, and child `parentID`, agent/model when supplied, and distinct
+  coordination identity survive folding.
+- [ ] Verify both direct tools and Code Mode where available; document which
+  path ran. Restore a bounded v2 `--probe-task` only if automation is useful;
+  do not reuse the removed v1 HTTP endpoints.
+
+Acceptance: redacted event-shape evidence, a correct folded root/child state,
+and regression tests for any mapping fix. Avoid committing full transcripts
+or credentials. Reuse the V7 run where it supplies the same evidence.
+
+### R2 — durable replay and recovery contract
+
+Resolve open question 1 without assuming that subscribing replays history.
+
+- [ ] In an isolated workspace, create a root/child and emit events before
+  loading a probe subscriber. Compare what the late subscriber receives with
+  what a subscriber established before the run receives.
+- [ ] Restart with the existing hub, then with an empty hub. Check server
+  tool visibility separately from TUI backfill, including parent links and
+  status. Identify which metadata is durable and which must be read live.
+- [ ] Document the observed recovery guarantee. If acceptance requires more
+  recovery than the host provides, specify and implement a bounded native
+  session import through verified v2 APIs; do not rely on replay accidentally
+  observed in one development build.
+
+Acceptance: a reproducible restart matrix and an explicit recovery contract
+in README. Any added import has limits, no duplicate records, and tests for
+missing/deleted sessions and failing native lookups.
+
+### R3 — visual v2 acceptance
+
+Resolve open question 4 and the outstanding visual checks on the current
+v2 host, rather than relying on the historical v1 screenshots.
+
+- [ ] Use `--demo --keep` and README's visual checklist to verify sidebar
+  placement, task selection, tabs/search/grouping, hierarchy expansion,
+  detail navigation/back, scrolling, claims/conflicts, and follow-up dialogs.
+- [ ] Check normal and narrow terminals, including a short terminal; controls
+  and selected rows must remain usable without text overlap.
+- [ ] Compare slot placement options only if the current appended sidebar
+  is obstructed or confusing; retain the current placement when it passes.
+- [ ] Verify risk/error/completion toast and attention behavior against live
+  events; synthetic demo evidence alone does not prove host event delivery.
+
+Acceptance: dated screenshots or a short recording and a concise checklist
+with host version and terminal dimensions. Report platform-specific issues.
+The remote variants are covered by V7.R2 rather than a duplicate run.
+
+### R4 — Node-host compatibility decision
+
+Open question 2 is a compatibility investigation, not an automatic build-system
+change. The package currently ships TypeScript source for the verified host.
+
+- [ ] Identify a supported Node-hosted v2 distribution before adding it to the
+  compatibility matrix. Install the packed artifact into that host and check
+  server/TUI entrypoints, cleanup, and optional renderer peers.
+- [ ] If that supported host cannot load the source, specify a compiled export
+  strategy and test the packed artifact against both distributions. Otherwise
+  retain source exports and document the verified runtime.
+
+Acceptance: either evidence for supported Node loading or a documented Bun-only
+support boundary. The optional web view must give its existing clear unavailable
+message where `Bun.serve` is absent. Do not add a compilation pipeline merely to
+close a speculative question.
+
+### R5 — documentation reconciliation and release
+
+- [ ] Add a current-status summary pointing to these checklists and V7's
+  acceptance evidence. Preserve v1 history but label it clearly; remove stale
+  instructions from the active handoff. Update the test count after changes.
+- [ ] Verify supported opencode versions against the live evidence; adjust
+  declared ranges only when compatibility results justify it.
+- [ ] Run typecheck, the full suite, `canary --load`, and the harness server
+  spike against the intended release host. Verify Windows and Linux CI.
+- [ ] Pack the package and install that tarball in isolated server/TUI config;
+  confirm both entrypoints, optional peers, and the documented options work.
+  Inspect tarball contents using the existing CI whitelist.
+- [ ] Choose the release version, write concise release notes, and record the
+  validated host version. Review/commit the fixes and acceptance evidence,
+  then integrate the branch through the project's normal review process.
+- [ ] Publish only after an explicit release decision; verify the published
+  artifact with the same isolated install smoke check.
+
+Acceptance: the release artifact loads successfully and all required gates
+pass. Failed gates block release; missing external prerequisites stay pending.
+No additional broad feature development is implied by this checklist.
+
+### Execution order
+
+1. Finish V7.R0 regression coverage and V7.R1 probe work.
+2. Run R1/R2 locally with a configured model; run R3 visual checks.
+3. Run V7.R2 on two devices, sharing event/subagent evidence with R1.
+4. Resolve R4's support boundary and complete R5 release preparation.
+5. Make the separate integration/publish decision when evidence is ready.

@@ -1,37 +1,53 @@
-import { mkdirSync, writeFileSync } from "node:fs"
-import { networkInterfaces } from "node:os"
+import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { Plugin } from "@opencode/plugin/tui"
 import { fallbackStateDir } from "../../src/hub/paths.ts"
+import { detectRemote, localInterfaceHosts } from "../../src/tui/remote.ts"
 
+type Session = Record<string, unknown>
 type ProbeContext = {
+  readonly app?: { readonly version?: string; readonly channel?: string }
   readonly location?: { readonly directory?: string }
   readonly client: {
     readonly server?: { info: () => Promise<unknown> }
     readonly session: {
-      create: (input: { title: string }) => Promise<{ id?: string } | undefined>
-      prompt: (input: {
-        sessionID: string
-        text: string
-        resume?: boolean
-      }) => Promise<{ id?: string } | undefined>
+      create: (input: { title: string; model?: { id: string; providerID: string } }) => Promise<{ id?: string }>
+      prompt: (input: { sessionID: string; text: string; resume?: boolean }) => Promise<{ id?: string }>
       context: (input: { sessionID: string }) => Promise<unknown>
       list?: (input?: { limit?: number }) => Promise<unknown>
     }
   }
   readonly data: {
+    readonly on?: (type: string, handler: (event: unknown) => void) => (() => void) | void
     readonly session: {
-      list: () => Array<Record<string, unknown>> | undefined
-      get: (sessionID: string) => Record<string, unknown> | undefined
+      list: () => Session[] | undefined
+      get: (sessionID: string) => Session | undefined
       root?: (sessionID: string) => string
       family?: (sessionID: string) => string[]
       cost?: (sessionID: string) => number
       status: (sessionID: string) => string
       readonly message: {
-        list: (sessionID: string) => unknown[]
+        list: (sessionID: string) => Session[]
         sync: (sessionID: string) => Promise<void>
       }
     }
+  }
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+const maxWait = Math.max(5_000, Math.min(180_000, Number(process.env.SUBPLUG_PROBE_TIMEOUT_MS) || 90_000))
+
+async function bounded<T>(operation: Promise<T>, label: string, timeoutMs = 10_000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
   }
 }
 
@@ -42,15 +58,10 @@ function probeDir(): string {
 function write(data: Record<string, unknown>): void {
   try {
     mkdirSync(probeDir(), { recursive: true })
-    writeFileSync(join(probeDir(), "tui-state-probe.json"), `${JSON.stringify({ at: Date.now(), ...data }, null, 2)}\n`)
+    writeFileSync(join(probeDir(), "tui-state-probe.json"), `${JSON.stringify(data, null, 2)}\n`)
   } catch {
-    // diagnostic only
+    // The parent harness reports a missing marker as a failure.
   }
-}
-
-function safe(value: unknown): unknown {
-  if (typeof value === "function") return "[function]"
-  return value
 }
 
 function unwrap(value: unknown): unknown {
@@ -60,104 +71,243 @@ function unwrap(value: unknown): unknown {
   return value
 }
 
-function localHosts(): string[] {
-  const hosts = new Set<string>(["127.0.0.1", "localhost", "::1"])
-  for (const addresses of Object.values(networkInterfaces())) {
-    for (const address of addresses ?? []) hosts.add(address.address)
-  }
-  return [...hosts]
+function rows(value: unknown): Session[] {
+  const unwrapped = unwrap(unwrap(value))
+  return Array.isArray(unwrapped) ? unwrapped.filter((item): item is Session => !!item && typeof item === "object") : []
 }
 
-function urlsOf(info: unknown): string[] {
-  const candidate = info && typeof info === "object" ? (info as { urls?: unknown }).urls : undefined
-  return Array.isArray(candidate) ? candidate.filter((url): url is string => typeof url === "string") : []
+function status(ctx: ProbeContext, sessionID: string): string {
+  try {
+    return ctx.data.session.status(sessionID)
+  } catch {
+    return "unknown"
+  }
+}
+
+function cost(ctx: ProbeContext, sessionID: string): number | undefined {
+  try {
+    return ctx.data.session.cost?.(sessionID)
+  } catch {
+    return undefined
+  }
+}
+
+function model(): { id: string; providerID: string } | undefined {
+  const value = process.env.SUBPLUG_PROBE_MODEL?.trim()
+  if (!value) return undefined
+  const slash = value.indexOf("/")
+  if (slash <= 0 || slash === value.length - 1) return undefined
+  return { providerID: value.slice(0, slash), id: value.slice(slash + 1) }
+}
+
+function safeError(error: unknown): string {
+  // Errors from an HTTP client can include URLs, credentials, or prompt text.
+  if (error && typeof error === "object") {
+    const code = (error as { code?: unknown }).code
+    if (typeof code === "string") return code.slice(0, 80)
+    const message = String((error as { message?: unknown }).message ?? "").toLowerCase()
+    if (message.includes("timed out")) return "probe operation timed out"
+    if (message.includes("provider") || message.includes("model") || message.includes("credential")) {
+      return "provider or selected model unavailable"
+    }
+  }
+  return "probe operation failed; see client log"
+}
+
+function assistantPresent(messages: Session[]): boolean {
+  return messages.some((message) =>
+    message.type === "assistant" &&
+    Array.isArray(message.content) &&
+    message.content.some((entry: unknown) =>
+      !!entry && typeof entry === "object" &&
+      (entry as { type?: unknown }).type === "text" &&
+      typeof (entry as { text?: unknown }).text === "string" &&
+      Boolean((entry as { text: string }).text.trim()),
+    ),
+  )
+}
+
+function sampleSession(ctx: ProbeContext, sessionID: string): Record<string, unknown> {
+  const session = ctx.data.session.get(sessionID)
+  return {
+    id: sessionID,
+    inStore: Boolean(session),
+    parentID: session?.parentID,
+    status: status(ctx, sessionID),
+    cost: cost(ctx, sessionID),
+    root: ctx.data.session.root?.(sessionID),
+    family: ctx.data.session.family?.(sessionID),
+  }
 }
 
 export default Plugin.define({
   id: "subplug.probe.tui-state",
   async setup(rawContext) {
     const ctx = rawContext as unknown as ProbeContext
+    let disposed = false
+    const off: Array<() => void> = []
     void (async () => {
-      await new Promise((resolve) => setTimeout(resolve, 2500))
+      const startedAt = Date.now()
+      const execute = process.env.SUBPLUG_PROBE_EXECUTE === "1"
+      const events: Array<{ at: number; type: string; sessionID?: string; parentID?: string; fields: string[] }> = []
+      const statuses: Array<{ at: number; value: string }> = []
+      const costs: Array<{ at: number; value: number }> = []
+      const errors: string[] = []
+      let childID: string | undefined
+      let result: Record<string, unknown> = {}
       try {
-        const info = await ctx.client.server?.info().catch((error) => ({ error: String(error) }))
-        const urls = urlsOf(info)
-        const local = new Set(localHosts())
-        const remoteHeuristic = urls.length
-          ? urls.every((url) => {
-              try {
-                return !local.has(new URL(url).hostname)
-              } catch {
-                return true
-              }
+        // Register before admitting the prompt. Store only event names, IDs and
+        // observation times; event payloads can contain private message text.
+        for (const type of [
+          "session.created",
+          "session.execution.started",
+          "session.execution.succeeded",
+          "session.execution.failed",
+          "session.execution.interrupted",
+          "session.step.started",
+          "session.step.ended",
+          "session.status",
+          "session.idle",
+          "session.inbox.enqueued",
+          "session.inbox.delivered",
+          "session.usage.updated",
+        ]) {
+          const dispose = ctx.data.on?.(type, (event) => {
+            const data = event && typeof event === "object" ? (event as { data?: unknown }).data : undefined
+            const record = data && typeof data === "object" ? (data as Record<string, unknown>) : {}
+            const sessionID = typeof record.sessionID === "string" ? record.sessionID : undefined
+            if (childID && sessionID && sessionID !== childID) return
+            if (events.length >= 200) return
+            events.push({
+              at: Date.now(),
+              type,
+              sessionID,
+              parentID: typeof record.parentID === "string" ? record.parentID : undefined,
+              fields: Object.keys(record).sort(),
             })
-          : undefined
-
-        const root = await ctx.client.session.create({ title: "probe root" })
-        const rootID = root?.id
-        const child = rootID ? await ctx.client.session.create({ title: "probe child" }) : undefined
-        const childID = child?.id
-        const admitted = childID
-          ? await ctx.client.session.prompt({ sessionID: childID, text: "PROBE_TUI_STATE", resume: false })
-          : undefined
-        await new Promise((resolve) => setTimeout(resolve, 2500))
-        if (childID) {
-          await ctx.data.session.message.sync(childID).catch(() => undefined)
+          })
+          if (typeof dispose === "function") off.push(dispose)
         }
-        const context = childID ? await ctx.client.session.context({ sessionID: childID }).catch(() => undefined) : undefined
-        const contextRows = Array.isArray(context) ? context : (context as { data?: unknown[] } | undefined)?.data
 
-        const clientListRaw = await ctx.client.session.list?.({ limit: 200 }).catch(() => undefined)
-        const clientList = unwrap(unwrap(clientListRaw))
-        const storeList = ctx.data.session.list() ?? []
-
-        write({
-          location: ctx.location?.directory,
-          serverInfo: info === undefined ? undefined : (safe(info) as Record<string, unknown>),
-          serverUrls: urls,
-          localHosts: [...local],
-          remoteHeuristic,
-          sessionCount: storeList.length,
-          storeList: storeList.slice(0, 5).map((session) => ({
-            id: session.id,
-            parentID: session.parentID,
-            title: session.title,
-            agent: session.agent,
-            model: (session.model as { id?: string } | undefined)?.id,
-            cost: session.cost,
-            directory: (session.location as { directory?: string } | undefined)?.directory,
-            updated: (session.time as { updated?: number } | undefined)?.updated,
-          })),
-          clientListCount: Array.isArray(clientList) ? clientList.length : undefined,
-          root: rootID
-            ? {
-                id: rootID,
-                inStore: Boolean(ctx.data.session.get(rootID)),
-                status: ctx.data.session.status(rootID),
-                cost: ctx.data.session.cost?.(rootID),
-                root: ctx.data.session.root?.(rootID),
-                family: ctx.data.session.family?.(rootID),
-              }
-            : undefined,
-          child: childID
-            ? {
-                id: childID,
-                inStore: Boolean(ctx.data.session.get(childID)),
-                parentID: ctx.data.session.get(childID)?.parentID,
-                status: ctx.data.session.status(childID),
-                cost: ctx.data.session.cost?.(childID),
-                root: ctx.data.session.root?.(childID),
-                family: ctx.data.session.family?.(childID),
-                storeMessages: ctx.data.session.message.list(childID).length,
-                contextMessages: Array.isArray(contextRows) ? contextRows.length : undefined,
-                admittedID: admitted?.id,
-              }
-            : undefined,
+        const remote = await detectRemote("auto", ctx.location?.directory, {
+          info: () => bounded(ctx.client.server?.info() ?? Promise.resolve(undefined), "server info"),
+          localHosts: localInterfaceHosts,
+          directoryExists: (directory) => Boolean(directory && existsSync(directory)),
         })
+        const selectedModel = model()
+        if (execute && !selectedModel) {
+          errors.push("SUBPLUG_PROBE_MODEL must be provider/model for execution mode")
+        } else {
+          const root = await bounded(ctx.client.session.create({ title: "subplug probe root", ...(selectedModel ? { model: selectedModel } : {}) }), "root create")
+          const rootID = root?.id
+          if (!rootID) throw new Error("root session has no id")
+          const child = await bounded(ctx.client.session.create({ title: "subplug probe scratch", ...(selectedModel ? { model: selectedModel } : {}) }), "scratch create")
+          childID = child?.id
+          if (!childID) throw new Error("child session has no id")
+
+          const promptAt = Date.now()
+          const admitted = await bounded(ctx.client.session.prompt({
+            sessionID: childID,
+            text: execute ? "Reply with exactly PROBE_OK. Do not use tools." : "PROBE_TUI_STATE",
+            ...(execute ? {} : { resume: false }),
+          }), "prompt admission", 20_000)
+          const admittedAt = Date.now()
+          let sawBusy = false
+          let sawIdleAfterBusy = false
+          let sawAssistant = false
+          let assistantAt: number | undefined
+          let contextMessages = 0
+          const deadline = Date.now() + (execute ? maxWait : 2500)
+          while (!disposed && Date.now() < deadline) {
+            const current = status(ctx, childID)
+            if (statuses.at(-1)?.value !== current) statuses.push({ at: Date.now(), value: current })
+            const currentCost = cost(ctx, childID)
+            if (typeof currentCost === "number" && costs.at(-1)?.value !== currentCost) {
+              costs.push({ at: Date.now(), value: currentCost })
+            }
+            if (current === "running" || current === "busy") sawBusy = true
+            if (sawBusy && current === "idle") sawIdleAfterBusy = true
+            if (execute || Date.now() + 300 >= deadline) {
+              await bounded(ctx.data.session.message.sync(childID), "message sync").catch(() => undefined)
+              const store = ctx.data.session.message.list(childID)
+              sawAssistant ||= assistantPresent(store)
+              if (!sawAssistant) {
+                const context = await bounded(ctx.client.session.context({ sessionID: childID }), "context fetch").catch(() => undefined)
+                const contextRows = rows(context)
+                contextMessages = contextRows.length
+                sawAssistant ||= assistantPresent(contextRows)
+              }
+              if (sawAssistant && !assistantAt) assistantAt = Date.now()
+            }
+            if (execute && sawBusy && sawIdleAfterBusy && sawAssistant) break
+            await sleep(250)
+          }
+
+          const clientList = rows(await bounded(ctx.client.session.list?.({ limit: 200 }) ?? Promise.resolve(undefined), "session list").catch(() => undefined))
+          const storeList = ctx.data.session.list() ?? []
+          const storeMessages = ctx.data.session.message.list(childID)
+          const rootSample = sampleSession(ctx, rootID)
+          const scratchSample = sampleSession(ctx, childID)
+          result = {
+            remote,
+            locationAvailable: Boolean(ctx.location?.directory),
+            sessionCount: storeList.length,
+            clientListCount: clientList.length,
+            root: rootSample,
+            child: {
+              ...scratchSample,
+              isTaskChild: false,
+              storeMessages: storeMessages.length,
+              contextMessages,
+              admittedID: admitted?.id,
+            },
+            promptAt,
+            admittedAt,
+            admissionMs: admittedAt - promptAt,
+            assistantAt,
+            execution: execute ? { sawBusy, sawIdleAfterBusy, sawAssistant } : undefined,
+          }
+          if (!admitted?.id) errors.push("prompt admission did not return a message id")
+          if (!rootSample.inStore || !scratchSample.inStore) errors.push("session store did not hydrate the probe sessions")
+          if (!storeMessages.length) errors.push("session message store did not show the admitted prompt")
+          if (execute && !sawBusy) errors.push("no busy status observed")
+          if (execute && !sawIdleAfterBusy) errors.push("no idle status observed after busy")
+          if (execute && !sawAssistant) errors.push("no assistant transcript observed")
+        }
       } catch (error) {
-        write({ error: String(error) })
+        errors.push(safeError(error))
+      } finally {
+        for (const dispose of off) dispose()
+        if (!disposed) {
+          write({
+            schema: 1,
+            mode: execute ? "execute" : "hydrate",
+            outcome: errors.length
+              ? (execute && (
+                  !model() ||
+                  errors.includes("provider or selected model unavailable") ||
+                  (result.execution && !(result.execution as { sawBusy?: boolean }).sawBusy)
+                ) ? "incomplete" : "fail")
+              : "pass",
+            startedAt,
+            completedAt: Date.now(),
+            durationMs: Date.now() - startedAt,
+            hostVersion: ctx.app?.version,
+            hostChannel: ctx.app?.channel,
+            pluginVersion: process.env.SUBPLUG_PROBE_PLUGIN_VERSION,
+            model: process.env.SUBPLUG_PROBE_MODEL || undefined,
+            ...result,
+            events,
+            statuses,
+            costs,
+            errors,
+          })
+        }
       }
     })()
-    return () => undefined
+    return () => {
+      disposed = true
+      for (const dispose of off) dispose()
+    }
   },
 })

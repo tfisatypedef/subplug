@@ -290,6 +290,11 @@ OPENCODE_BIN=/path/to/opencode2 bun run canary --load        # canary plus the h
 bun run scripts/dev-harness.ts                               # headless server spike (scratch config + repo)
 bun run scripts/dev-harness.ts --tui                         # headless TUI load check (marker file)
 bun run scripts/dev-harness.ts --probe-tui-state             # plugin store + session.context coverage
+SUBPLUG_PROBE_MODEL=provider/model bun run scripts/dev-harness.ts \
+  --probe-tui-state --attach --probe-execute  # one bounded scratch prompt
+SUBPLUG_PROBE_SERVER_URL=http://<server-ip>:4096 OPENCODE_PASSWORD=<password> \
+  SUBPLUG_PROBE_MODEL=provider/model bun run scripts/dev-harness.ts \
+  --probe-tui-state --existing-server --probe-execute
 bun run scripts/dev-harness.ts --demo --keep                 # seed a hub and print TUI launch instructions
 ```
 
@@ -300,6 +305,17 @@ uses a random port and an isolated XDG tree under
 opencode state. `--keep` leaves the scratch dir behind. The workspace lives
 outside the repo on purpose: opencode watches local plugin sources, so state
 writes inside the repo would retrigger plugin reloads.
+
+  `--probe-execute` requires `SUBPLUG_PROBE_MODEL=provider/model` and records
+  prompt admission, execution events, store status transitions, transcript
+  appearance, and cost in a redacted JSON result. `SUBPLUG_PROBE_TIMEOUT_MS`
+  bounds the wait (default 90 seconds). `--existing-server` connects to an
+  already running server, writes only to a fresh client scratch directory,
+  and retains the result path it prints. It creates two named sessions and
+  admits one scratch prompt on that server; execution mode also runs the
+  selected model. It never seeds server workspace files or stops the server.
+  Run that mode on a second device for the V7 LAN acceptance checklist in
+  `V7PLAN.md`; the same-machine `--attach` run is an earlier gate.
 
 The spike seeds a `coordination/claims` registry, starts a throwaway
 `opencode serve` with Basic auth under a scratch config, forces plugin

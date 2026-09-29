@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process"
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { hostname, tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -34,6 +34,8 @@ const inspectMode = process.argv.includes("--inspect")
 const expectSubagent = process.argv.includes("--expect-subagent")
 const probeTuiState = process.argv.includes("--probe-tui-state")
 const attachMode = process.argv.includes("--attach")
+const existingServerMode = process.argv.includes("--existing-server")
+const probeExecute = process.argv.includes("--probe-execute")
 const verbose = process.argv.includes("--verbose")
 
 const harnessIdentity = `Harness Agent@${hostname()}`
@@ -511,6 +513,10 @@ async function runTuiCheck(): Promise<void> {
 }
 
 async function runTuiStateProbe(): Promise<void> {
+  if (existingServerMode) {
+    await runExistingServerProbe()
+    return
+  }
   seedRepo()
   writeConfig([{ package: probeStateEntry, options: {} }])
   rmSync(stateDir, { recursive: true, force: true })
@@ -528,7 +534,11 @@ async function runTuiStateProbe(): Promise<void> {
     serverURL = base
   }
 
-  const { child, output } = spawnTui({ SUBPLUG_PROBE_DIR: probeDir }, { serverURL })
+  const { child, output } = spawnTui({
+    SUBPLUG_PROBE_DIR: probeDir,
+    SUBPLUG_PROBE_EXECUTE: probeExecute ? "1" : "0",
+    SUBPLUG_PROBE_PLUGIN_VERSION: JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version as string,
+  }, { serverURL })
   const marker = join(probeDir, "tui-state-probe.json")
   const done = await waitFor(() => existsSync(marker), 90_000, "tui state probe marker")
   stop(child)
@@ -536,8 +546,14 @@ async function runTuiStateProbe(): Promise<void> {
   await sleep(500)
 
   if (done) {
-    log(`TUI state probe (${attachMode ? "attach" : "standalone"}): \n${readFileSync(marker, "utf8").trim()}`)
-    if (!keep) rmSync(harnessDir, { recursive: true, force: true })
+    const report = JSON.parse(readFileSync(marker, "utf8")) as { outcome?: string }
+    log(`TUI state probe (${attachMode ? "attach" : "standalone"}): \n${JSON.stringify(report, null, 2)}`)
+    if (!keep && !probeExecute) rmSync(harnessDir, { recursive: true, force: true })
+    if (probeExecute) log(`execution evidence retained at ${marker}`)
+    if (report.outcome !== "pass") {
+      process.exitCode = 1
+      return
+    }
     log("TUI state probe OK")
     return
   }
@@ -546,6 +562,126 @@ async function runTuiStateProbe(): Promise<void> {
   if (serverOutput()) process.stderr.write(serverOutput().slice(-4000))
   log("TUI state probe marker was not written")
   process.exit(1)
+}
+
+async function runExistingServerProbe(): Promise<void> {
+  const rawURL = process.env.SUBPLUG_PROBE_SERVER_URL
+  const secret = process.env.OPENCODE_PASSWORD
+  if (!rawURL || !secret) {
+    throw new Error("--existing-server requires SUBPLUG_PROBE_SERVER_URL and OPENCODE_PASSWORD")
+  }
+  const endpoint = new URL(rawURL)
+  if (endpoint.username || endpoint.password || !["http:", "https:"].includes(endpoint.protocol)) {
+    throw new Error("SUBPLUG_PROBE_SERVER_URL must be an HTTP(S) URL without embedded credentials")
+  }
+  const serverURL = endpoint.origin
+  log("existing-server probe will create two named sessions and admit one scratch prompt on the server")
+  if (probeExecute) log("execution mode will run that prompt with the selected model")
+  const response = await fetch(`${serverURL}/api/info`, {
+    headers: { authorization: `Basic ${Buffer.from(`opencode:${secret}`).toString("base64")}` },
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (!response.ok) throw new Error(`existing server /api/info returned HTTP ${response.status}`)
+
+  // This directory belongs only to the client. No server workspace, server
+  // configuration, or existing state tree is ever seeded, cleared, or stopped.
+  const clientDir = mkdtempSync(join(tmpdir(), "subplug-probe-client-"))
+  const clientConfig = join(clientDir, "config")
+  const probeDir = join(clientDir, "probe")
+  mkdirSync(clientConfig, { recursive: true })
+  writeFileSync(join(clientConfig, "cli.json"), JSON.stringify({
+    plugins: [{ package: root, options: { remote: "auto" } }, { package: probeStateEntry }],
+  }, null, 2))
+  const bin = resolveOpencodeBin()
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    OPENCODE_CONFIG_DIR: clientConfig,
+    OPENCODE_PASSWORD: secret,
+    XDG_STATE_HOME: join(clientDir, "state"),
+    XDG_DATA_HOME: join(clientDir, "data"),
+    XDG_CACHE_HOME: join(clientDir, "cache"),
+    SUBPLUG_PROBE_DIR: probeDir,
+    SUBPLUG_PROBE_EXECUTE: probeExecute ? "1" : "0",
+    SUBPLUG_PROBE_PLUGIN_VERSION: JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version as string,
+  }
+  delete env.SUBPLUG_STORAGE_DIR
+  delete env.SUBPLUG_HUB_GROUP
+  const child = process.platform === "win32"
+    ? spawn(bin, ["--server", serverURL], {
+        cwd: clientDir,
+        env,
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      })
+    : spawn("script", [
+        "-qec",
+        [bin, "--server", serverURL].map((value) => `'${value.replaceAll("'", "'\\''")}'`).join(" "),
+        "/dev/null",
+      ], {
+        cwd: clientDir,
+        env,
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+        detached: true,
+      })
+  let outputBytes = 0
+  child.stdout?.on("data", (chunk: Buffer) => { outputBytes += chunk.length })
+  child.stderr?.on("data", (chunk: Buffer) => { outputBytes += chunk.length })
+  const marker = join(probeDir, "tui-state-probe.json")
+  log(`client config: ${clientConfig}`)
+  log("client launch: set OPENCODE_PASSWORD in the environment, then run:")
+  const quoted = (value: string) => `'${value.replaceAll("'", "''")}'`
+  if (process.platform === "win32") {
+    log(`  $env:OPENCODE_CONFIG_DIR = ${quoted(clientConfig)}; & ${quoted(bin)} --server ${quoted(serverURL)}`)
+  } else {
+    const shellQuoted = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
+    log(`  OPENCODE_CONFIG_DIR=${shellQuoted(clientConfig)} ${shellQuoted(bin)} --server ${shellQuoted(serverURL)}`)
+  }
+  const probeTimeout = Math.max(5_000, Math.min(180_000, Number(env.SUBPLUG_PROBE_TIMEOUT_MS) || 90_000))
+  const done = await waitFor(() => existsSync(marker) || child.exitCode !== null, probeTimeout + 20_000, "existing-server probe")
+  stop(child)
+  await sleep(500)
+  if (!done || !existsSync(marker)) {
+    throw new Error(`client probe did not write a result (exit=${child.exitCode ?? "timeout"}, logBytes=${outputBytes}); client files retained at ${clientDir}`)
+  }
+  const report = JSON.parse(readFileSync(marker, "utf8")) as {
+    outcome?: string
+    errors?: string[]
+    serverPluginLoaded?: boolean
+    clientPluginLoaded?: boolean
+  }
+  const clientMarker = join(clientDir, "state", "opencode", "subplug", "tui-plugin-loaded.json")
+  let serverLoaded = false
+  try {
+    const pluginResponse = await fetch(`${serverURL}/api/plugin`, {
+      headers: { authorization: `Basic ${Buffer.from(`opencode:${secret}`).toString("base64")}` },
+      signal: AbortSignal.timeout(10_000),
+    })
+    const pluginPayload = pluginResponse.ok
+      ? (await pluginResponse.json()) as { data?: Array<{ id?: string; state?: { status?: string }; features?: { server?: boolean } }> }
+      : undefined
+    const serverPlugin = pluginPayload?.data?.find((entry) => entry.id === "subplug")
+    serverLoaded = serverPlugin?.state?.status === "active" && serverPlugin.features?.server === true
+  } catch {
+    report.errors = [...(report.errors ?? []), "server plugin inventory unavailable"]
+  }
+  const clientLoaded = existsSync(clientMarker)
+  report.serverPluginLoaded = serverLoaded
+  report.clientPluginLoaded = clientLoaded
+  if (!serverLoaded || !clientLoaded) {
+    report.outcome = "fail"
+    if (!serverLoaded) report.errors = [...(report.errors ?? []), "subplug server plugin was not confirmed active"]
+    if (!clientLoaded) report.errors = [...(report.errors ?? []), "subplug TUI plugin marker was not found"]
+  }
+  writeFileSync(marker, `${JSON.stringify(report, null, 2)}\n`)
+  log(`probe report: ${marker}`)
+  log(JSON.stringify(report, null, 2))
+  if (report.outcome !== "pass") {
+    process.exitCode = 1
+  } else {
+    // Keep redacted evidence for the two-device acceptance record, even on pass.
+    log(`client evidence retained at ${clientDir}`)
+  }
 }
 
 async function createSession(title: string): Promise<string> {
@@ -676,6 +812,12 @@ async function runSpike(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  if ((existingServerMode || probeExecute) && !probeTuiState) {
+    throw new Error("--existing-server and --probe-execute require --probe-tui-state")
+  }
+  if (existingServerMode && attachMode) {
+    throw new Error("choose either --existing-server or --attach")
+  }
   if (inspectMode) {
     runInspect()
     return
