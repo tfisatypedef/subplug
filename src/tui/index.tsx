@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { mkdirSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { randomUUID } from "node:crypto"
 import pkg from "../../package.json"
@@ -17,6 +17,8 @@ import type { TranscriptRow } from "../shared/transcript.ts"
 import { fallbackStateDir, hubRoot, readHubPointer } from "../hub/paths.ts"
 import { findRepoRoot } from "../coord/repo.ts"
 import { backfillSessions, listNativeSessions, loadSessionDetailV2, type SessionDetailV2 } from "./data.ts"
+import { detectRemote, localInterfaceHosts } from "./remote.ts"
+import { readRemoteState } from "./remote-state.ts"
 import { resolveTuiOptions, type TuiContextLike, type SubplugTuiOptions } from "./context.ts"
 import { Dashboard } from "./dashboard.tsx"
 import {
@@ -139,6 +141,7 @@ function createMonitor(ctx: TuiContextLike, cfg: SubplugTuiOptions) {
   const serverID = `subplug-tui-${randomUUID()}`
   let hubDir: string | undefined
   let repoRoot: string | undefined
+  let remote = false
   let resolved = false
   let backfilled = false
   let lastRiskAt = Date.now()
@@ -146,6 +149,12 @@ function createMonitor(ctx: TuiContextLike, cfg: SubplugTuiOptions) {
   const resolvePaths = async (): Promise<void> => {
     if (resolved) return
     resolved = true
+    remote = await detectRemote(cfg.remote, ctx.location?.directory, {
+      info: () => ctx.client.server?.info?.() ?? Promise.resolve(undefined),
+      localHosts: localInterfaceHosts,
+      directoryExists: (directory) => Boolean(directory && existsSync(directory)),
+    })
+    if (remote) return
     const explicitDir = cfg.storageDir ?? process.env.SUBPLUG_STORAGE_DIR
     const pointer = explicitDir ? undefined : readHubPointer()
     hubDir =
@@ -175,6 +184,10 @@ function createMonitor(ctx: TuiContextLike, cfg: SubplugTuiOptions) {
   const tick = async (): Promise<void> => {
     try {
       await resolvePaths()
+      if (remote) {
+        setState(readRemoteState(ctx))
+        return
+      }
       if (!hubDir) return
       await runBackfill()
       const next = readMonitorState(hubDir, repoRoot)
@@ -301,7 +314,9 @@ export function Sidebar(props: {
         )
       })}
       <text flexShrink={0} width={inner()} wrapMode="none" truncate fg={skin().muted}>
-        {`claims ${activeClaims()} active${conflicts() ? ` · ${conflicts()} conflict${conflicts() === 1 ? "" : "s"}` : ""}`}
+        {snapshot().source === "remote"
+          ? "remote attach · claims unavailable"
+          : `claims ${activeClaims()} active${conflicts() ? ` · ${conflicts()} conflict${conflicts() === 1 ? "" : "s"}` : ""}`}
       </text>
       <text flexShrink={0} width={inner()} wrapMode="none" truncate fg={skin().muted}>
         click or ctrl+alt+a
@@ -593,7 +608,7 @@ export function createFollowUpComposer(ctx: TuiContextLike, state: () => Monitor
     try {
       const target = state().sessions.find((session) => session.sessionID === sessionID)
       if (!target) throw new Error("target session is no longer available")
-      if (!state().hubDir) throw new Error("monitor is still loading; try again shortly")
+      if (!state().hubDir && state().source !== "remote") throw new Error("monitor is still loading; try again shortly")
       const sent = await sendFollowUp({
         target,
         status: target.status,

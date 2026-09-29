@@ -183,10 +183,13 @@ export function Dashboard(props: {
             <span style={{ fg: skin().secondary }}>  Group: {groupingLabel(grouping())}  g</span>
           </text>
           <text flexShrink={0} fg={skin().muted}>
-            claims {snapshot().registry.claims.filter((claim) => claim.status === "active").length} active
-            {snapshot().registry.conflicts.length
-              ? ` · ${snapshot().registry.conflicts.length} conflict${snapshot().registry.conflicts.length === 1 ? "" : "s"}`
-              : ""}
+            {snapshot().source === "remote"
+              ? "remote attach · claims unavailable"
+              : `claims ${snapshot().registry.claims.filter((claim) => claim.status === "active").length} active${
+                  snapshot().registry.conflicts.length
+                    ? ` · ${snapshot().registry.conflicts.length} conflict${snapshot().registry.conflicts.length === 1 ? "" : "s"}`
+                    : ""
+                }`}
           </text>
         </box>
 

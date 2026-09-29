@@ -21,7 +21,9 @@ const probeStateEntry = join(root, "scripts", "probe-tui-state")
 const port = process.env.SUBPLUG_HARNESS_PORT
   ? Number(process.env.SUBPLUG_HARNESS_PORT)
   : 4100 + Math.floor(Math.random() * 900)
-const base = `http://127.0.0.1:${port}`
+const host = process.env.SUBPLUG_HARNESS_HOST ?? "127.0.0.1"
+const connectHost = process.env.SUBPLUG_HARNESS_CONNECT ?? host
+const base = `http://${connectHost}:${port}`
 const password = process.env.SUBPLUG_HARNESS_PASSWORD ?? "subplug-harness"
 const authHeaders = { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}` }
 const keep = process.argv.includes("--keep")
@@ -31,6 +33,7 @@ const pokeRisk = process.argv.includes("--poke-risk")
 const inspectMode = process.argv.includes("--inspect")
 const expectSubagent = process.argv.includes("--expect-subagent")
 const probeTuiState = process.argv.includes("--probe-tui-state")
+const attachMode = process.argv.includes("--attach")
 const verbose = process.argv.includes("--verbose")
 
 const harnessIdentity = `Harness Agent@${hostname()}`
@@ -203,6 +206,22 @@ async function waitFor(predicate: () => boolean, timeoutMs: number, label: strin
   return false
 }
 
+async function forcePluginActivation(timeoutMs = 120_000): Promise<Record<string, unknown> | undefined> {
+  // The v2 host activates local plugins lazily; asking for the inventory first
+  // forces resolution and setup, so the event tap is live before sessions exist.
+  let entry: Record<string, unknown> | undefined
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline && !entry) {
+    const response = await api("/api/plugin")
+    if (response.ok) {
+      const payload = (await response.json()) as { data?: Array<Record<string, unknown>> }
+      entry = (payload.data ?? []).find((item) => item.id === "subplug")
+    }
+    if (!entry) await sleep(500)
+  }
+  return entry
+}
+
 function stop(child: ChildProcess): void {
   if (!child.pid) return
   if (process.platform === "win32") {
@@ -240,7 +259,7 @@ function killStaleServer(): void {
 
 function spawnServer(logLevel: string): { child: ChildProcess; output: () => string } {
   const bin = resolveOpencodeBin()
-  const child = spawn(bin, ["serve", "--port", String(port), "--print-logs", "--log-level", logLevel.toLowerCase()], {
+  const child = spawn(bin, ["serve", "--hostname", host, "--port", String(port), "--print-logs", "--log-level", logLevel.toLowerCase()], {
     cwd: repoDir,
     env: harnessEnv(),
     stdio: ["ignore", "pipe", "pipe"],
@@ -277,17 +296,23 @@ async function startServerUntilReady(attempts = 3): Promise<{ child: ChildProces
   throw new Error("server did not become ready after retries")
 }
 
-function spawnTui(extraEnv: Record<string, string> = {}): { child: ChildProcess; output: () => string } {
+function spawnTui(
+  extraEnv: Record<string, string> = {},
+  options: { serverURL?: string } = {},
+): { child: ChildProcess; output: () => string } {
   const bin = resolveOpencodeBin()
+  // Attach mode connects to an already-running server; standalone starts a
+  // private one. `--print-logs` requires standalone, so it is omitted on attach.
+  const cliArgs = options.serverURL ? ["--server", options.serverURL] : ["--standalone", "--print-logs"]
   const child =
     process.platform === "win32"
-      ? spawn(bin, ["--standalone", "--print-logs"], {
+      ? spawn(bin, cliArgs, {
           cwd: repoDir,
           env: harnessEnv(extraEnv),
           stdio: ["ignore", "pipe", "pipe"],
           windowsHide: true,
         })
-      : spawn("script", ["-qec", `'${bin}' --standalone --print-logs`, "/dev/null"], {
+      : spawn("script", ["-qec", `'${bin}' ${cliArgs.join(" ")}`, "/dev/null"], {
           cwd: repoDir,
           env: harnessEnv(extraEnv),
           stdio: ["ignore", "pipe", "pipe"],
@@ -388,6 +413,7 @@ async function runDemo(): Promise<void> {
   const { child, output } = spawnServer("error")
   try {
     await waitForServer(120_000)
+    await forcePluginActivation()
     const ready = await waitFor(() => hubRoots().length > 0, 20_000, "hub directory")
     const hubDir = hubRoots()[0]
     if (!ready || !hubDir) throw new Error("hub directory was not created")
@@ -489,20 +515,35 @@ async function runTuiStateProbe(): Promise<void> {
   writeConfig([{ package: probeStateEntry, options: {} }])
   rmSync(stateDir, { recursive: true, force: true })
   const probeDir = join(stateDir, "probe")
-  const { child, output } = spawnTui({ SUBPLUG_PROBE_DIR: probeDir })
+
+  let server: ChildProcess | undefined
+  let serverOutput = () => ""
+  let serverURL: string | undefined
+  if (attachMode) {
+    const started = await startServerUntilReady()
+    server = started.child
+    serverOutput = started.output
+    const seeded = await createSession("probe root (server-seeded)")
+    log(`attached mode: server ready at ${base}; seeded ${seeded}`)
+    serverURL = base
+  }
+
+  const { child, output } = spawnTui({ SUBPLUG_PROBE_DIR: probeDir }, { serverURL })
   const marker = join(probeDir, "tui-state-probe.json")
   const done = await waitFor(() => existsSync(marker), 90_000, "tui state probe marker")
   stop(child)
+  if (server) stop(server)
   await sleep(500)
 
   if (done) {
-    log(`TUI state probe: ${readFileSync(marker, "utf8").trim()}`)
+    log(`TUI state probe (${attachMode ? "attach" : "standalone"}): \n${readFileSync(marker, "utf8").trim()}`)
     if (!keep) rmSync(harnessDir, { recursive: true, force: true })
     log("TUI state probe OK")
     return
   }
 
   process.stderr.write(output().slice(-4000))
+  if (serverOutput()) process.stderr.write(serverOutput().slice(-4000))
   log("TUI state probe marker was not written")
   process.exit(1)
 }
@@ -536,16 +577,7 @@ async function runSpike(): Promise<void> {
 
     // Ask the host for its plugin inventory first: that forces local plugin
     // resolution and setup, so the event tap is live before sessions exist.
-    let entry: Record<string, unknown> | undefined
-    const activationDeadline = Date.now() + 120_000
-    while (Date.now() < activationDeadline && !entry) {
-      const response = await api("/api/plugin")
-      if (response.ok) {
-        const payload = (await response.json()) as { data?: Array<Record<string, unknown>> }
-        entry = (payload.data ?? []).find((item) => item.id === "subplug")
-      }
-      if (!entry) await sleep(500)
-    }
+    const entry = await forcePluginActivation()
     const features = entry?.features as { server?: boolean; tui?: boolean } | undefined
     const pluginState = entry?.state as { status?: string } | undefined
     log(`plugin inventory: ${JSON.stringify(entry ?? "(missing)")}`)

@@ -1,12 +1,14 @@
 # subplug V7 — remote access (brainstorm)
 
-Status: **brainstorm / not started.** Supersedes the earlier standalone
+Status: **V7.1–V7.5 implemented (V7.0 probe done); only a two-device LAN latency
+pass remains.** Open decisions answered (see "Resolved decisions"); scope locked
+to read-only + comms with a hub-free remote. Supersedes the earlier standalone
 `subplug-v2` draft, which wrongly proposed a new plugin. subplug is **already a
-v2 plugin**; V7 is a delta on its `v2` branch. The branch is checked out in
-`C:\Users\weaka\opsesh` (`v7-remote` @ `12c3586`). Baseline green on Windows
-(2026-09-29): `bun install --frozen-lockfile`, `bun run canary` (host
-`opencode v2.0.19` via `@opencode/cli@2.0.19`; installed plugin API matches the
-host line), `bun run typecheck`, `bun test` (168 pass / 0 fail).
+v2 plugin**; V7 is a delta on its `v2` branch, checked out in
+`C:\Users\weaka\opsesh` (`v7-remote`, based on `origin/v2`). Gates green on
+Windows (2026-09-29): `bun run typecheck`, `bun test` (183 pass / 0 fail),
+`bun run canary`, and harness `spike` / `--tui` / `--probe-tui-state [--attach]`
+/ `--demo` / `--inspect`.
 
 ## Goal
 
@@ -30,8 +32,11 @@ Path note: `src/…`, `scripts/…`, `test/…` are this repo (subplug); `packag
 - The remote-attached TUI **already receives live remote data**: `ctx.data.session.*`,
   `ctx.client.*`, and `ctx.data.on(...)` events (`src/tui/index.tsx:787-823`);
   today it only backfills `session.created` into the local hub
-  (`src/tui/data.ts:132-180`). So the fix is to render primarily from
-  `ctx.data`/`ctx.client` and treat the hub as local enrichment.
+  (`src/tui/data.ts:132-180`). The fix is to render remotely from
+  `ctx.data`/`ctx.client` **without the hub**: a remote attach must not read or
+  write the local hub (the hub cannot be "local enrichment" when `hubDir`/
+  `repoRoot` resolve to paths on the server). Local attaches keep the hub
+  unchanged. See "State sources" below.
 - `remote access` is explicitly out of scope in the v2 web-view section
   (`PLAN.md:1047`), so V7 is the natural next phase.
 
@@ -75,12 +80,11 @@ Notes:
 - The v2 CLI ships as the `opencode2` binary; the canary prefers it so a v1
   `opencode` on PATH does not shadow it (`scripts/opencode-bin.ts`).
 - Keep `origin` on GitHub for upstream merges; commit V7 on `v7-remote`.
-- Windows: `scripts/opencode-bin.ts` picks the extensionless npm shim from
-  `where`, which async `spawn` cannot execute (ENOENT; canary's `spawnSync`
-  tolerates it, the harness does not) — set
-  `OPENCODE_BIN=%APPDATA%\npm\opencode2.cmd` before `bun run harness`. Spike ran
-  green with it (2026-09-29): server ready, plugin `subplug` active with
-  server+tui features, live tap + identity, hub pointer matches.
+- Windows: `scripts/opencode-bin.ts` resolves the npm `.exe`
+  (`@opencode/cli/bin/opencode.exe`) from the extensionless/`.cmd` shim on the
+  `where` result, so `bun run scripts/dev-harness.ts` works without setting
+  `OPENCODE_BIN`. (Previously the extensionless shim failed under async `spawn`
+  with ENOENT; the canary's `spawnSync` tolerated it, the harness did not.)
 
 ## Two-device architecture (target)
 
@@ -109,16 +113,13 @@ Notes:
 
 ## Proposed V7 phases (plugin scope)
 
-- **V7.0 — probe.** Two-device harness (serve on A, attach on B with subplug).
-  Record into this file: (a) which `ctx.data.session.*` fields arrive remotely
-  (list/get/status/root/family/cost, message sync), (b) status latency and event
-  delivery (`session.idle`, `execution.*`), (c) `ctx.client.server.info()` local
-  vs remote output, (d) which `ctx.client.*` methods exist on the attach
-  (`listNativeSessions` already probes `session.list` optionally), (e) `hubDir` /
-  `repoRoot` resolution on B, (f) transcript path (store vs
-  `client.session.context`), (g) follow-up send + whether comms injection fires
-  server-side. *Accept:* all seven recorded.
-- **V7.1 — remote detection + scoping.** Detect via `ctx.client.server.info()`
+- **V7.0 — probe. DONE (2026-09-29, single-machine two-process harness).**
+  Findings recorded below. The two-device LAN pass still needs a machine with a
+  configured model/provider for event-latency items; everything else is measured.
+  Run it with `OPENCODE_BIN=%APPDATA%\npm\opencode2.cmd bun run
+  scripts/dev-harness.ts --probe-tui-state [--attach] [--keep]`; bind/connect
+  hosts via `SUBPLUG_HARNESS_HOST` / `SUBPLUG_HARNESS_CONNECT`.
+- **V7.1 — remote detection + scoping. DONE (2026-09-29).** Detect via `ctx.client.server.info()`
   (`GET /api/info` → `{ version, pid, urls, paths.tmp }`): when bound `0.0.0.0`
   the `urls` are the server machine's LAN interfaces, so "no `urls` entry matches
   my loopback/local interfaces" ⇒ remote. Do not use `pid` as identity (changes
@@ -126,7 +127,7 @@ Notes:
   path. Scope hub records so remote sessions never merge with local ones —
   preferred: a `remote` mode in `SubplugTuiOptions` (`src/tui/context.ts`,
   alongside `storageDir`/`hubGroup`) that bypasses the hub.
-- **V7.2 — hub-independent TUI state.** Build the dashboard from
+- **V7.2 — hub-independent TUI state. DONE (2026-09-29).** Build the dashboard from
   `ctx.data.session.*` (list/status/cost/family) as the primary source. The hub
   cannot be "local enrichment" on a remote attach: `resolvePaths` prefers a local
   `hub.json` pointer (7-day max age, written by a server plugin that ran here)
@@ -137,30 +138,105 @@ Notes:
   unavailable on remote". Comms pointers are server-side too (`injectComms`,
   `src/server/index.ts`), so remote injection cannot come from the client hub.
   This is the bulk of the work.
-- **V7.3 — remote transcripts + actions.** Verify transcripts via
+- **V7.3 — remote transcripts + actions. DONE (2026-09-29; store-first transcripts are hub-free, actions route through `ctx.client`).** Verify transcripts via
   `loadTranscriptV2` (store → `ctx.client.session.context`) against a remote;
   route follow-up/composer (and any new actions) through `ctx.client`.
-- **V7.4 — start-remote docs + status line.** Document the two commands;
+- **V7.4 — start-remote docs + status line. DONE (2026-09-29; README "Remote attach"; dashboard and sidebar show "remote attach · claims unavailable").** Document the two commands;
   optionally show the attached endpoint in the dashboard. Manual only, no SSH.
-- **V7.5 — tests.** Fake-context remote tests + a live two-process/LAN check;
-  `bun test`, `bun run typecheck`, canary.
+- **V7.5 — tests. DONE except the LAN pass (2026-09-29).** Fake-context remote
+  tests in `test/remote.test.ts` (detection, mapping, hub-free state); the
+  single-machine two-process probe passes (`--probe-tui-state --attach`); plus
+  `bun test`, `bun run typecheck`, and canary. A two-device LAN latency check
+  still needs a second machine with a configured model.
 
-## Open decisions (unresolved)
+## V7.0 findings (2026-09-29)
 
-1. **Scope of control.** subplug is read-only + opt-out queue-only comms. Does V7
-   add **full control** (create/interrupt/shell/compact/agent+model switch) on the
-   remote, or keep the read-only + comms posture and only make it work remotely?
-   *Recommended:* keep read-only + comms for V7 — the follow-up path already goes
-   through `ctx.client.session.prompt` and survives the attach unchanged; full
-   control is a separate product decision (V8).
-2. **Remote detection.** Automatic when the endpoint is non-loopback, or an
-   explicit option (`remote: true` / `servers`)? Should the dashboard ever show
-   local and remote sessions together, or one attached server at a time?
-   *Recommended:* automatic detection (V7.1) plus an explicit override; one
-   attached server at a time (the TUI cannot switch servers at runtime).
-3. **Hub scoping.** Server-scoped hub key vs a hub-free remote path.
-   *Recommended:* hub-free remote path first (smallest change, no wrong data);
-   server-scoped keys only if remote history must be recorded locally.
+Probe: `scripts/probe-tui-state/tui.ts`, driven by `--probe-tui-state [--attach]`.
+Local server `opencode2 serve` (v2.0.19) + TUI attached with `--server <url>`,
+both processes on one machine. Raw report: `state/probe/tui-state-probe.json`.
+
+- **(a) Remote `ctx.data.session.*` hydrates fully.** On the attach,
+  `data.session.list()` returns the server's sessions, `get` hits, and
+  `status` / `cost` / `root` / `family` all answer. `message.sync(id)` then
+  `message.list(id)` populated the store (1 message for the probed child), while
+  `client.session.context(id)` returned 0 rows (the run admitted a prompt but no
+  model executed, so there was no assistant context). **Go for V7.2: build the
+  dashboard from `ctx.data`/`ctx.client`; no hub needed.**
+- **(b) Status latency + events: deferred.** No model/provider is configured in
+  the harness, so prompts are admitted but never execute: cost stayed 0 and no
+  `session.idle`/`execution.*` fired. Needs a configured model on the server
+  side; automated once a provider is available.
+- **(c) `server.info()` output.** Loopback bind → `urls: ["http://127.0.0.1:P"]`.
+  Bind to one LAN IP → `urls: ["http://<that-ip>:P"]`. Bind `0.0.0.0` → `urls`
+  enumerates the machine's LAN interfaces and **omits loopback**
+  (`["http://100.x.x.x:P", "http://172.x.x.x:P", …]`). So a remote host's urls
+  will not match any local interface ⇒ the V7.1 heuristic holds. `pid` is present
+  but not used as identity.
+- **(d) `ctx.client.*` on the attach.** `session.create`, `session.prompt`,
+  `session.context`, and `session.list({limit})` all worked through the attach
+  (the probe used every one). `session.list` is present (not undefined).
+- **(e) `hubDir` / `repoRoot` on the attach.** `ctx.location.directory` is the
+  **server** repo path (`...\Temp\subplug-harness\repo`) even though the TUI runs
+  locally; `findRepoRoot` on it is meaningless client-side. Confirms hub-free
+  remote.
+- **(f) Transcript path.** Store (`message.sync`+`list`) is the primary and is
+  reachable remotely; `client.session.context` is the fallback (0 rows here
+  because nothing executed). `loadTranscriptV2` already prefers the store.
+- **(g) Follow-up send.** `client.session.prompt` over the attach returned an
+  admitted message id (server-side delivery), so the read-only + comms path
+  survives the attach. Comms injection itself is server-side (`injectComms`) and
+  runs in the server process; it is unaffected by the client attach.
+
+## Resolved decisions (2026-09-29)
+
+1. **Scope of control:** read-only + opt-out queue-only comms. No
+   create/interrupt/shell/compact/agent+model switch in V7. The follow-up path
+   already goes through `ctx.client.session.prompt` and survives the attach
+   unchanged; full control is a separate product decision (V8).
+2. **Remote detection:** automatic (V7.1) plus an explicit `remote` override.
+   One attached server at a time — the TUI cannot switch servers at runtime, so
+   local and remote sessions are never shown together.
+3. **Hub scoping:** hub-free remote. A remote attach reads and writes no local
+   hub (smallest change, no wrong data). Server-scoped hub keys are deferred
+   until remote history must be recorded locally.
+
+### State sources
+
+`createMonitor` (`src/tui/index.tsx:137-211`) selects one of two sources behind
+the existing `state()` signal; the dashboard, sidebar and details pane are
+unchanged:
+
+- **local** (default): `readMonitorState(hubDir, repoRoot)` exactly as today.
+- **remote**: synthesize `MonitorState` from `ctx.data` only — no hub read, no
+  backfill, no hub logging, empty `risks`/`recentCommands`/`comms`, and an empty
+  `registry` (claims/verifications/conflicts unavailable).
+
+Remote `SessionNode` mapping:
+
+| SessionNode | remote source |
+| --- | --- |
+| `sessionID` / `parentID` | `ctx.data.session.list()` `id` / `parentID` |
+| `kind` | `parentID ? "subagent" : "root"` |
+| `title` / `agent` / `model` / `directory` | `SessionInfo` fields (`location.directory`) |
+| `status` | `ctx.data.session.status()`: `running → busy`, `idle → idle`; `retry`/`error` only from events |
+| `cost` | `ctx.data.session.cost(id)` |
+| `lastEventAt` | `time.updated` |
+| `identity` | never — so claims cannot join |
+
+UI must degrade explicitly: claim/conflict counts (`dashboard.tsx:186-188`),
+sidebar sessions+claims (`index.tsx:263-304`), details claims/rollup/inbox/
+command (`details-pane.tsx:26-36`), identity line (`index.tsx:443`), risk toasts
+(`index.tsx:182-196`), plus skip backfill (`index.tsx:156-173`) and follow-up
+hub logging (`index.tsx:587-596`).
+
+### Detection (V7.1)
+
+`resolveTuiOptions` gains `remote?: "auto" | true | false`, default `"auto"`.
+Auto uses `ctx.client.server.info().urls` versus the local interface hosts
+(`node:os.networkInterfaces()`); secondary signal is whether
+`ctx.location.directory`/`findRepoRoot` exists locally. Probe once, cache, and
+fall back to **local** if `server.info()` rejects. Explicit `true`/`false`
+overrides the heuristic.
 
 ## Out of scope
 

@@ -58,6 +58,7 @@ export function readMonitorState(
   return {
     generatedAt: now,
     hubDir,
+    source: "hub",
     sessions: foldSessions(records),
     risks: toRisks(records),
     recentCommands: records.filter((record) => record.kind === "command").slice(-MAX_COMMANDS),

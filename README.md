@@ -103,6 +103,7 @@ explicit `storageDir`, it reads the hub pointer the server writes under
 | `web.token` (server) | none | Optional `?token=` gate on every web request. |
 | `intervalMs` (TUI) | 1000 | Hub poll interval. |
 | `sidebarAspect` (TUI) | 0.5 | Fallback cell width/height ratio for the Agents panel when the terminal doesn't report pixel resolution (rows = `round(36 × aspect)`, clamped 11–24). |
+| `remote` (TUI) | `auto` | Detect a remote attach from `client.server.info().urls` versus local interfaces; `remote`/`local` force it (also `SUBPLUG_REMOTE`). On remote the TUI is hub-free: claims/comms unavailable. |
 | `route` (TUI) | `subplug` | Dashboard route name. |
 
 The dashboard command is the named keymap command `subplug.open` (default
@@ -250,6 +251,33 @@ session read through `session.context`. It binds `127.0.0.1` only, serves GET
 only, and never writes; message bodies stay in the native session store, never
 in the hub. The server guards the listener for Node-hosted CLIs and reports a
 clear error when `Bun.serve` is unavailable.
+
+## Remote attach
+
+Run sessions on one machine and drive the TUI from another (plugin-only; no
+core changes). Because v2 executes server-side, attaching already runs
+tools/shell/files on the server machine.
+
+On the server machine:
+
+```sh
+OPENCODE_PASSWORD=<password> opencode2 serve --hostname 0.0.0.0 --port 4096
+```
+
+On the client machine:
+
+```sh
+OPENCODE_PASSWORD=<password> opencode2 --server http://<server-ip>:4096
+```
+
+subplug detects the attach automatically (the advertised `urls` don't match any
+local interface, with the session directory as a fallback) and renders from the
+attached server's live `data.session`/`client` state. A remote attach is
+**hub-free**: it never reads or writes the local hub, so claims, conflicts, risk
+toasts and command history degrade to "claims unavailable on remote" instead of
+showing wrong data. Force the mode with the `remote` TUI option
+(`auto`/`remote`/`local`) or `SUBPLUG_REMOTE`. LAN only — plain-HTTP Basic auth
+is sniffable — and one attached server at a time.
 
 ## Development
 
