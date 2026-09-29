@@ -93,6 +93,9 @@ Path plugins must default-export an object with `id` plus either `server` or
 | `intervalMs` (TUI) | 1000 | Hub poll interval. |
 | `sidebarAspect` (TUI) | 0.5 | Fallback cell width/height ratio for the Agents panel when the terminal doesn't report pixel resolution (rows = `round(36 × aspect)`, clamped 11–24). |
 | `route` / `command` (TUI) | `subplug` / `subplug.open` | Dashboard route name and palette command. |
+| `web.enabled` (server) | `false` | Serve the read-only web view on `127.0.0.1`. |
+| `web.port` (server) | `7690` | Web view port. |
+| `web.token` (server) | none | Optional `?token=` gate on every web request. |
 
 ## What gets recorded
 
@@ -226,6 +229,22 @@ subagents, then press `f` and enter: “Use the updated fixture; keep the public
 API unchanged.” The target receives that text in its own conversation.
 You can also ask your current agent: “Find the test subagent with `swarm_status`
 and send it this follow-up with `swarm_send`.”
+
+## Web view
+
+A read-only command-center page served by the server plugin on localhost. Off
+by default; enable it in the plugin options:
+
+```json
+{ "plugin": [["subplug", { "web": { "enabled": true, "port": 7690, "token": "optional" } }]] }
+```
+
+Open `http://127.0.0.1:7690` (append `?token=...` when a token is set). The
+page polls the folded hub once per second and shows sessions grouped by status,
+active claims with conflict flags, and a capped transcript for the selected
+session read through the flat client. It binds `127.0.0.1` only, serves GET
+only, and never writes; message bodies stay in the native session store, never
+in the hub.
 
 ## Development
 

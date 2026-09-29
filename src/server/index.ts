@@ -12,6 +12,7 @@ import { buildSessionTree, flattenTree, rollupSubtree } from "../hub/tree.ts"
 import { applyCommsRecord, buildInboxBlock, inboxFor, resolveTargets } from "../hub/comms.ts"
 import { FollowUpConfirmationRequired, followUpError, sendFollowUp, type FollowUpTransport } from "../shared/follow-up.ts"
 import { fallbackStateDir, hubRoot, snapshotFile } from "../hub/paths.ts"
+import { startWebServer, type WebTranscript } from "./web.ts"
 import { findRepoRoot, isCoordinationEnabled } from "../coord/repo.ts"
 import { enforceLeases, relativeLeasePath, toolLeasePaths } from "../coord/leases.ts"
 import { buildRegistryState, coverageErrors, readAdoptionPaths } from "../coord/claims.ts"
@@ -34,6 +35,7 @@ type SubplugOptions = {
   hubGroup?: string
   retentionBytes?: number
   maxAgeMs: number
+  web: { enabled: boolean; port: number; token?: string }
 }
 
 type SessionInfo = {
@@ -97,6 +99,7 @@ function resolveOptions(options?: Record<string, unknown>): SubplugOptions {
   const root = asRecord(options)
   const coord = asRecord(root.coord)
   const comms = asRecord(root.comms)
+  const web = asRecord(root.web)
   const envInject = toBool(process.env.SUBPLUG_INJECT_IDENTITY, false)
   const envStorage = toStringValue(process.env.SUBPLUG_STORAGE_DIR)
   return {
@@ -109,6 +112,21 @@ function resolveOptions(options?: Record<string, unknown>): SubplugOptions {
       toStringValue(process.env.SUBPLUG_HUB_GROUP),
     retentionBytes: toNumber(coord.retentionBytes) ?? toNumber(root.retentionBytes),
     maxAgeMs: toNumber(coord.maxAgeMs) ?? toNumber(root.maxAgeMs) ?? 24 * 60 * 60 * 1000,
+    web: {
+      enabled: toBool(web.enabled, false),
+      port: toNumber(web.port) ?? 7690,
+      token: toStringValue(web.token),
+    },
+  }
+}
+
+function logWeb(input: PluginInput, message: string, level: "info" | "warn"): void {
+  try {
+    void Promise.resolve(input.client.app.log({ body: { service: "subplug", level, message } })).catch(
+      () => undefined,
+    )
+  } catch {
+    // logging is best-effort
   }
 }
 
@@ -399,6 +417,7 @@ const server: Plugin = async (input, options) => {
   const repoRootCache = new Map<string, string | undefined>()
   const identityBaseCache = new Map<string, string>()
   let snapshotTimer: ReturnType<typeof setTimeout> | undefined
+  let web: { stop: () => void } | undefined
 
   const ensure = async (): Promise<{ hubDir: string; log: EventLog }> => {
     if (hubDir && log) return { hubDir, log }
@@ -654,6 +673,24 @@ const server: Plugin = async (input, options) => {
     } catch {
       return []
     }
+  }
+
+  const webTranscript = async (sessionID: string): Promise<WebTranscript | undefined> => {
+    const { hubDir: dir } = await ensure()
+    const state = readMonitorState(dir, repoRootFor(input.worktree ?? input.directory))
+    let known = state.sessions.some((session) => session.sessionID === sessionID)
+    if (!known) {
+      try {
+        const info = unwrap<{ id?: string }>(
+          await input.client.session.get({ path: { id: sessionID }, throwOnError: true }),
+        )
+        known = Boolean(info?.id)
+      } catch {
+        known = false
+      }
+    }
+    if (!known) return undefined
+    return { sessionID, messages: await safeMessages(sessionID, MESSAGE_LIMIT) }
   }
 
   const buildDetail = async (
@@ -1022,10 +1059,33 @@ const server: Plugin = async (input, options) => {
         refs: { directory: input.directory, worktree: input.worktree },
       })
       if (!process.env.SUBPLUG_SKIP_BASELINE) await seedBaseline()
+      if (cfg.web.enabled) {
+        const { hubDir: dir } = await ensure()
+        const root = repoRootFor(input.worktree ?? input.directory)
+        const started = startWebServer(
+          {
+            state: () => readMonitorState(dir, root),
+            transcript: webTranscript,
+            token: cfg.web.token,
+          },
+          { port: cfg.web.port },
+        )
+        if ("error" in started) {
+          logWeb(input, `web view failed on port ${cfg.web.port}: ${started.error}`, "warn")
+        } else {
+          web = started
+          logWeb(input, `web view on http://127.0.0.1:${started.port}`, "info")
+        }
+      }
     } catch {
       // deferred bootstrap is best-effort; hooks still retry through ensure()
     }
   })()
+
+  hooks.dispose = async () => {
+    web?.stop()
+    web = undefined
+  }
 
   return hooks
 }

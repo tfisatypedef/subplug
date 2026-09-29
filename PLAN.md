@@ -10,11 +10,11 @@ implemented**. Server tap, session fold, coord bridge, `swarm_status`
 command center (filter tabs, grouping, search, help, details pane) with
 Enter-to-switch, a store-backed transcript, session cost folding,
 the TUI composer/inbox, a timeout-guarded state-dir fallback, and a shared-hub
-`hubGroup` are in place, and a live `task` subagent is observed end to end by
-`--probe-task`. Publish prep is done (0.1.0, `files` whitelist,
+`hubGroup` are in place, a live `task` subagent is observed end to end by
+`--probe-task`, and the optional web view is implemented (`web.enabled`,
+localhost-only). Publish prep is done (0.1.0, `files` whitelist,
 `prepublishOnly`, `bun run canary`); remaining: the interactive visual TUI
-checks (see "Implementation status"), the optional web view, and the actual
-npm publish decision.
+checks (see "Implementation status") and the actual npm publish decision.
 
 Follow-up context: the dashboard and detail offer `f`/`m` plus a clickable
 **[f] Follow up** action. TUI and tool sends share delivery logic: check live
@@ -427,7 +427,7 @@ logic; the harness only proves hooks fire and pointers land.
 | P4 viewing implementation | done | `test/tree.test.ts` + `test/transcript.test.ts` pure helpers; cost fold in `test/hub.test.ts`/`test/server.test.ts`; TUI tree/rollups/transcript + `swarm_status format=tree`; `--tui` load; visual check user-run |
 | P5 comms implementation | done | `test/comms.test.ts` pure helpers; `swarm_send` + inbox-pull tests in `test/server.test.ts`; injection `--probe-inject`; TUI composer/inbox `--tui` load; visual check user-run |
 | Probe: injection part persistence + `comms.delivered` | done | `--probe-inject` (see results) |
-| P6 cross-process + portability | partial | state-dir timeout guard + hang test; multi-server fold test; `hubGroup` in server + TUI; CI (`.github/workflows/ci.yml`), `.gitattributes`, LICENSE, `bun.lock`, engines already present; web view not started |
+| P6 cross-process + portability | partial | state-dir timeout guard + hang test; multi-server fold test; `hubGroup` in server + TUI; CI (`.github/workflows/ci.yml`), `.gitattributes`, LICENSE, `bun.lock`, engines already present; web view implemented (`src/server/web.ts`, `web.enabled`, GET-only, `127.0.0.1`, `test/web.test.ts` + live smoke) |
 | Publish prep (npm) | done | `0.1.0`; `private` dropped and `files` whitelists `src`/README/LICENSE; `@opentui/*` + `solid-js` are optional peers with dev deps kept; `@opencode-ai/plugin` `^1.18.32` (lockfile 1.18.33); `prepublishOnly` runs typecheck + tests; `bun run canary` checks the host binary against the range and `--load` runs the TUI harness (8 tests, `test/canary.test.ts`); CI `pack` job asserts the tarball contents and the `canary` job installs the current `opencode-ai`, then runs `canary --load`; local opencode clone restored to upstream |
 | P6 review fixes | done | degenerate hub keys -> `unknown`; non-positive timeout guard; globally newest record limit; `EventTail` fresh-comms injection; spike/`--tui`/`--probe-inject` green |
 | TUI layout + sidebar affordance | done | rows/panels constrained to full width, conversation clipped; explicit `flexShrink={0}` on labels/rows/panels stops auto-shrink overlap on short terminals (`flexShrink` defaults to 1 for auto dimensions); sidebar is a themed square `scrollbox`, 36 cells wide with the row count derived from the terminal cell aspect (pixel resolution, else `sidebarAspect`, clamped 11–24 rows) so it looks square in pixels rather than cells; last 5 sessions as single-line rows whose titles marquee on hover when they overflow (helpers in `src/tui/presentation.ts`), click-to-open; `test/tui.test.tsx` covers the pixel-square dimensions, aspect/fallback/clamp math, the hover marquee, the 5-session cap, no-wrap rows, theme-token colors, hint, and click-to-open; `test/presentation.test.ts` covers the marquee step/window helpers; `bunfig.toml` preloads the Solid compiler so rendered updates are reactive; sidebar visual check user-confirmed (square + themed + marquee) on 1.18.33 |
@@ -445,7 +445,20 @@ Four review findings fixed post-P6, one per commit (baseline 80 tests):
 | Global record limit | `readEventRecords` keeps the globally newest `maxRecords` across all files with a bounded `(ts, seq)` min-heap instead of stopping in lexical file order; `maxRecords: 0` returns `[]`. | `test/hub.test.ts` cross-file limit + tie tests |
 | Stale comms fold | `EventTail` seeds byte-offset/identity cursors per hub file before the initial replay and reads only new bytes on `chat.message`; rotation/shrink resets, partial lines are held, `msgID` dedupe makes re-reads idempotent. | `test/hub.test.ts` EventTail tests; `test/server.test.ts` post-bootstrap pointer injection; `--probe-inject` |
 
-## P6 web view — proposal (not started)
+## P6 web view
+
+Implemented. `src/server/web.ts` holds the pure request handler
+(`createWebFetch`), the `Bun.serve` wrapper (`startWebServer`), and a single
+static page (no build step); the status tables moved to `src/shared/status.ts`
+so TUI and web share them. The server plugin parses
+`web: { enabled, port, token }`, starts the listener in the deferred bootstrap
+after `ensure()`, logs the URL through `client.app.log`, and stops it in
+`hooks.dispose`. `/api/state` returns the folded `MonitorState` plus per-session
+groups; `/api/session/:id` returns a capped transcript via `safeMessages`.
+GET-only, `127.0.0.1` only, optional `?token=`. Evidence: `test/web.test.ts`
+(page, groups, 405/404, token gate, transcript, bind/shutdown) and a live smoke
+run of `opencode serve` with `web.enabled` (page HTTP 200, state JSON with
+groups, POST 405, `web view on http://127.0.0.1:7691` logged).
 
 Goal: the command center in a browser for people who prefer a second monitor
 over the TUI. Read-only, localhost, opt-in; the hub stays metadata-only.
