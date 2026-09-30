@@ -10,6 +10,9 @@ the LAN as if working locally.
 - Remote attaches render from live `data.session`/`client` state and are
   hub-free: claims, conflicts, risk toasts, and command history report
   "claims unavailable on remote" instead of mixing with a local hub.
+- Remote dashboards enumerate sessions through the attached server's session
+  list (the reactive store is the fallback), so pre-existing server sessions
+  appear; previously only sessions learned about after attaching were shown.
 - Remote transcripts read from the store with `session.context` as fallback;
   follow-ups route through the attach. A failed status lookup stays `unknown`,
   so sending requires confirmation.

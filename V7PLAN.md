@@ -2,7 +2,8 @@
 
 Status: **V7.1–V7.5 implemented (V7.0 probe done); V7.R0 review fixes and V7.R1
 probe landed; single-machine execution and task-child acceptance pass on
-`opencode` 2.0.20; two-device (LAN or overlay) acceptance remains pending.**
+`opencode` 2.0.20; two-device (LAN or overlay) acceptance is in progress — the
+probe items pass over Tailscale and the visible UI checks remain.**
 Open decisions answered (see "Resolved decisions"); scope locked
 to read-only + comms with a hub-free remote. Supersedes the earlier standalone
 `subplug-v2` draft, which wrongly proposed a new plugin. subplug is **already a
@@ -270,12 +271,14 @@ overrides the heuristic.
 ## Remaining work specification (2026-09-29)
 
 This section is the current V7 completion checklist. V7.1–V7.5 feature code
-is implemented; the two-device acceptance has not been performed. The older
-probe results establish hydration and prompt admission, not model execution or
-event latency. V7.R0 and V7.R1 are committed on `v7-remote`; the suite passes
-188 tests with `bun run typecheck` clean. Single-machine execution and
-task-child acceptance pass on `2.0.20` (see V7.R1 below); the two-device
-run remains pending.
+is implemented. The older probe results established hydration and prompt
+admission, not model execution or event latency; a real two-device run over
+Tailscale has since established remote detection, model execution, the
+task-child link and the busy/idle latency, and found two fixes. V7.R0 and V7.R1
+are committed on `v7-remote`; the suite passes 190 tests with `bun run
+typecheck` clean. Single-machine execution and task-child acceptance pass on
+`2.0.20` (see V7.R1 below); the two-device visible UI checks remain pending
+(see V7.R2).
 
 ### V7.R0 — review fixes and regression coverage
 
@@ -354,16 +357,22 @@ tailnet address, and if you front it with `tailscale serve`, bind `0.0.0.0` (see
 V7.1's detection limitation). Run the client probe against that server, then
 perform the visible UI checks on the same session.
 
-- [ ] Auto-detection selects remote; dashboard/sidebar indicate remote attach.
+- [x] Auto-detection selects remote; dashboard/sidebar indicate remote attach.
   Claims/conflicts/history/inbox remain explicitly unavailable, and client
-  hub files are unchanged across monitoring and follow-up sends.
+  hub files are unchanged across monitoring and follow-up sends. Met for
+  detection and the unavailable claims/history (probe `remote: true` every run;
+  the user confirmed the dashboard footer). The follow-up-send hub check rides
+  with the follow-up item below.
 - [ ] Observe a real root and a real task-created child with the correct
-  parent link; navigate to both and inspect their transcript updates.
-- [ ] Collect at least five busy/idle transitions across bounded runs. Measure
+  parent link; navigate to both and inspect their transcript updates. The
+  parent link is probe-verified (`parentMatches: true`); the dashboard
+  navigation and transcript inspection are still pending.
+- [x] Collect at least five busy/idle transitions across bounded runs. Measure
   client event receipt to visible status using one client clock. Target:
   each visible update within two configured polling intervals plus 500 ms.
   Report missed transitions separately; do not infer network latency from
-  unsynchronized server/client clocks.
+  unsynchronized server/client clocks. Eight transitions over four runs; see
+  the evidence below.
 - [ ] Verify an idle-target follow-up resumes execution; a busy-target send
   asks for confirmation, cancellation sends nothing, and confirmation queues
   one native message. Check eventual consumption in the target transcript.
@@ -371,6 +380,28 @@ perform the visible UI checks on the same session.
   notification, and a child completion produces its completion notification.
 - [ ] Disconnect/reconnect the client: no cross-contamination with a local hub,
   no crash, and remote sessions/transcripts recover on reattach.
+
+Evidence (2026-09-30; server: Linux host over Tailscale, client: WSL2/Ubuntu;
+`opencode` 2.0.20, plugin 0.3.0, model `opencode/longcat-2.5-preview-free`;
+client probe `--probe-tui-state --existing-server`):
+
+- Hydrate: `remote: true`, `outcome: pass`, `errors: []`; the server listed 7
+  sessions while the reactive store held 2 — the store-only enumeration bug.
+- Execute (four bounded runs): all `remote: true`, `outcome: pass`, admission
+  14–110 ms, assistant transcript present, busy then idle each run. Eight
+  status transitions total. `execution.started → running` 253/355/281/285 ms
+  and `execution.succeeded → idle` 0/187/121/142 ms, all well inside two
+  polling intervals (1 s default) plus 500 ms.
+- Task: `remote: true`, `outcome: pass`, a real child with
+  `parentMatches: true`, `sawTaskChild`/`sawBusy`/`sawIdleAfterBusy` true,
+  `hubFoldSkipped: true`, `errors: []`.
+- The run found and fixed two defects: remote enumeration now uses
+  `client.session.list()` with the store as fallback (`b94919b`), and the task
+  probe no longer requires a local hub fold on a hub-free client (`8ef1843`).
+
+Still open: the visible follow-up confirm/queue, toast/attention and
+disconnect/reconnect checks, dashboard navigation and transcript inspection,
+and the failure/interruption/retry path.
 
 Runbook: README "Two-device acceptance (LAN or Tailscale)". It was rehearsed
 single-machine

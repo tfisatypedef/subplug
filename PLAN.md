@@ -1143,7 +1143,9 @@ This section supersedes the historical v1 "remaining" and handoff notes for
 the current `v7-remote` checkout. The v2 port and V7 feature implementation
 are present. V7 execution/LAN acceptance is specified in `V7PLAN.md` under
 "Remaining work specification"; its single-machine execution and task-child
-runs pass, but the two-device LAN pass is still pending. R0/R1 review fixes and
+runs pass; a real two-device run over Tailscale has since passed the probe
+items (detection, execution, task-child, latency) and found two remote fixes,
+with the visible UI checks still pending. R0/R1 review fixes and
 probe work are committed on `v7-remote`; the suite passes 190 tests and
 `bun run typecheck` is clean.
 
