@@ -185,7 +185,8 @@ function createMonitor(ctx: TuiContextLike, cfg: SubplugTuiOptions) {
     try {
       await resolvePaths()
       if (remote) {
-        setState(readRemoteState(ctx))
+        const native = await listNativeSessions(ctx)
+        setState(readRemoteState(ctx, Date.now(), native.length ? native : undefined))
         return
       }
       if (!hubDir) return

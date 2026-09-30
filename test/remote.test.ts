@@ -173,4 +173,19 @@ describe("readRemoteState", () => {
     expect(state.registry).toEqual({ claims: [], verifications: [], conflicts: [], errors: [] })
     expect(state.sessions[0]?.status).toBe("busy")
   })
+
+  test("prefers the native list so pre-existing server sessions are included", () => {
+    const ctx = remoteContext([{ id: "ses_live", time: { updated: 5 } }])
+    const state = readRemoteState(ctx, 10, [
+      { id: "ses_live", time: { updated: 5 } },
+      { id: "ses_preexisting", title: "older session", time: { updated: 3 } },
+    ])
+    expect(state.sessions.map((session) => session.sessionID)).toEqual(["ses_preexisting", "ses_live"])
+  })
+
+  test("falls back to the reactive store when the native list is empty", () => {
+    const ctx = remoteContext([{ id: "ses_store", time: { updated: 5 } }])
+    expect(readRemoteState(ctx, 10, []).sessions.map((session) => session.sessionID)).toEqual(["ses_store"])
+    expect(readRemoteState(ctx, 10).sessions.map((session) => session.sessionID)).toEqual(["ses_store"])
+  })
 })

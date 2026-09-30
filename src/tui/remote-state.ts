@@ -71,15 +71,24 @@ export function mapRemoteSessions(
 /**
  * Build a hub-free `MonitorState` from the attached server's live data. Risks,
  * commands, comms and the claim registry are unavailable on a remote attach.
+ *
+ * Enumeration prefers the sessions passed in from `client.session.list()`: the
+ * reactive store only carries sessions the client learned about since it
+ * attached, so pre-existing server sessions would otherwise be invisible. The
+ * store remains the fallback when the native list is empty or unavailable.
  */
-export function readRemoteState(ctx: TuiContextLike, now = Date.now()): MonitorState {
-  const sessions = ctx.data.session.list() ?? []
+export function readRemoteState(
+  ctx: TuiContextLike,
+  now = Date.now(),
+  sessions?: readonly V2SessionInfo[],
+): MonitorState {
+  const listed = sessions?.length ? sessions : (ctx.data.session.list() ?? [])
   return {
     generatedAt: now,
     hubDir: "",
     source: "remote",
     sessions: mapRemoteSessions(
-      sessions,
+      listed,
       {
         status: (sessionID) => ctx.data.session.status(sessionID),
         cost: ctx.data.session.cost?.bind(ctx.data.session),
