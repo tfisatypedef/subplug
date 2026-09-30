@@ -15,6 +15,11 @@
     "monitoring",
     "coordination"
   ],
+  "homepage": "https://github.com/tfisatypedef/subplug#readme",
+  "bugs": {
+    "url": "https://github.com/tfisatypedef/subplug/issues"
+  },
+  "author": "tfisatypedef (https://github.com/tfisatypedef)",
   "engines": {
     "opencode": ">=2",
     "bun": ">=1.3"
