@@ -10,8 +10,8 @@ v2 plugin**; V7 is a delta on its `v2` branch, checked out in
 `C:\Users\weaka\opsesh` (`v7-remote`, based on `origin/v2`). Gates green on
 Windows (2026-09-29): `bun run typecheck`, `bun test` (188 pass / 0 fail),
 `bun run canary`, and harness `spike` / `--tui` /
-`--probe-tui-state [--attach] [--probe-execute] [--probe-task]` /
-`--demo` / `--inspect`.
+`--probe-tui-state [--attach] [--probe-execute] [--probe-task]
+[--probe-tools] [--probe-replay]` / `--demo` / `--inspect`.
 
 ## Goal
 
@@ -305,17 +305,21 @@ remains pending; it is not established by typecheck or the provider-free
 hydration mode.
 
 Single-machine acceptance on opencode `2.0.20` (Windows, 2026-09-29, plugin
-`0.2.0`, model `opencode/nemotron-3.5-lightning-free`), all `outcome: pass`:
-the provider-free `--attach` hydration mode, the client-only
+`0.2.0`/`0.3.0`, model `opencode/nemotron-3.5-lightning-free`), all
+`outcome: pass`: the provider-free `--attach` hydration mode, the client-only
 `--existing-server` mode (against a separately started local server it left
-running), `--probe-execute` with a configured model, and `--probe-task` with a
-real task-created child. Execution evidence: admission 25 ms, busy observed
+running), `--probe-execute` with a configured model, `--probe-task` with a real
+task-created child, and `--probe-tools` asking for one `swarm_status` call.
+Execution evidence: admission 25 ms, busy observed
 after `session.execution.started`, idle after `session.execution.succeeded`,
 assistant transcript present, ~4.8 s wall time. Task evidence: the child's
 `session.created` carries `parentID` and `agent`; the child's `parentMatches`
 is true and the folded hub node is `kind: subagent` with
 `parentID` = root, `agent: general`, `model`, and a distinct coordination
-identity. `--probe-execute` without a model returned `outcome: incomplete` and
+identity. Tool evidence: the assistant content records a direct `swarm_status`
+tool entry (no `execute` Code Mode wrapper), while `session.tool.called/failed`
+events carry no tool name. `--probe-execute` without a model returned
+`outcome: incomplete` and
 a nonzero exit, as intended. These checks contain no LAN status-latency
 evidence (item (b) stays deferred) and no failure/interruption/retry path.
 

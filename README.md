@@ -321,6 +321,8 @@ SUBPLUG_PROBE_MODEL=provider/model bun run scripts/dev-harness.ts \
   --probe-tui-state --attach --probe-execute  # one bounded scratch prompt
 SUBPLUG_PROBE_MODEL=provider/model bun run scripts/dev-harness.ts \
   --probe-tui-state --attach --probe-task     # one task-created child, folded parent check
+SUBPLUG_PROBE_MODEL=provider/model bun run scripts/dev-harness.ts \
+  --probe-tui-state --attach --probe-tools    # ask for one tool call, record its routing
 SUBPLUG_HARNESS_DIR=$TMPDIR/subplug-replay bun run scripts/dev-harness.ts \
   --probe-tui-state --probe-replay            # late-subscriber replay + restart durability
 SUBPLUG_PROBE_SERVER_URL=http://<server-ip>:4096 OPENCODE_PASSWORD=<password> \

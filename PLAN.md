@@ -589,11 +589,12 @@ Recipe for V5: `npm i @opencode/cli@dev`, serve with the env above, Basic auth
    **Resolved (R4, `2.0.20`): no Node host exists.** The CLI ships a compiled
    per-platform binary that runs plugins under embedded Bun, so TS source
    exports are retained (Bun-only boundary documented in README).
-3. Direct (non-Code-Mode) `session.tool.called` shape and the `task` subagent
-   input. **Partially resolved (R1):** `--probe-task` confirmed a real task
-   child emits `session.created` with `parentID` and `agent`, and the child
-   folds as a `subagent` with a distinct identity. The direct-vs-Code-Mode tool
-   event shape is still unverified.
+3. ~~Direct (non-Code-Mode) `session.tool.called` shape and the `task` subagent
+   input.~~ **Resolved (R1):** `--probe-task` confirmed a real task child emits
+   `session.created` with `parentID` and `agent` and folds as a `subagent` with
+   a distinct identity; `--probe-tools` showed the tool event carries no tool
+   name and that the model invoked a direct named `swarm_status` entry with no
+   `execute` Code Mode wrapper.
 4. Sidebar slot ordering/placement after built-ins: the plugin uses `append`
    to `sidebar.content`; `before`/`after`/`prepend` were not compared visually.
 5. ~~Which release emits `session.status`/`session.execution.succeeded`.~~
@@ -1176,15 +1177,19 @@ real task-created child. Record the installed host and plugin versions.
   path ran. Restore a bounded v2 `--probe-task` only if automation is useful;
   do not reuse the removed v1 HTTP endpoints. `--probe-task` is restored as an
   opt-in mode that prompts the root to create one real `task` subagent and
-  checks the folded parent link. Code Mode versus direct tool routing was not
-  distinguished by the probe; the subscribed event list omits
-  `session.tool.*`, so that remains unverified.
+  checks the folded parent link. `--probe-tools` asks the model to call
+  `swarm_status` once. Observed on `2.0.20`: the assistant content records a
+  direct `swarm_status` tool entry — no `execute` Code Mode wrapper entry — and
+  `session.tool.called`/`failed`/`success` events carry no tool name
+  (`assistantMessageID`, `executed`, `id`, `input`, and `error` on failure), so
+  the routing is read from the message, not the event. The scratch call errored,
+  which does not affect the routing observation.
 
 Acceptance: redacted event-shape evidence, a correct folded root/child state,
 and regression tests for any mapping fix. Avoid committing full transcripts
 or credentials. Reuse the V7 run where it supplies the same evidence.
-Met on opencode `2.0.20` (Windows, 2026-09-29); the only unmet check is the
-direct-vs-Code-Mode tool routing, recorded above as unverified.
+Met on opencode `2.0.20` (Windows, 2026-09-29); tool routing is recorded above
+as a direct named tool with no Code Mode wrapper observed.
 
 ### R2 — durable replay and recovery contract
 

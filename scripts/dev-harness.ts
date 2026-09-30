@@ -40,6 +40,7 @@ const attachMode = process.argv.includes("--attach")
 const existingServerMode = process.argv.includes("--existing-server")
 const probeExecute = process.argv.includes("--probe-execute")
 const probeTask = process.argv.includes("--probe-task")
+const probeTools = process.argv.includes("--probe-tools")
 const probeReplay = process.argv.includes("--probe-replay")
 const verbose = process.argv.includes("--verbose")
 
@@ -541,8 +542,9 @@ async function runTuiStateProbe(): Promise<void> {
 
   const { child, output } = spawnTui({
     SUBPLUG_PROBE_DIR: probeDir,
-    SUBPLUG_PROBE_EXECUTE: probeExecute || probeTask ? "1" : "0",
+    SUBPLUG_PROBE_EXECUTE: probeExecute || probeTask || probeTools ? "1" : "0",
     SUBPLUG_PROBE_TASK: probeTask ? "1" : "0",
+    SUBPLUG_PROBE_TOOLS: probeTools ? "1" : "0",
     SUBPLUG_PROBE_PLUGIN_VERSION: JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version as string,
   }, { serverURL })
   const marker = join(probeDir, "tui-state-probe.json")
@@ -583,6 +585,7 @@ async function runExistingServerProbe(): Promise<void> {
   const serverURL = endpoint.origin
   log("existing-server probe will create two named sessions and admit one scratch prompt on the server")
   if (probeExecute) log("execution mode will run that prompt with the selected model")
+  if (probeTools) log("tool mode will ask the model to call swarm_status once")
   const response = await fetch(`${serverURL}/api/info`, {
     headers: { authorization: `Basic ${Buffer.from(`opencode:${secret}`).toString("base64")}` },
     signal: AbortSignal.timeout(10_000),
@@ -607,8 +610,9 @@ async function runExistingServerProbe(): Promise<void> {
     XDG_DATA_HOME: join(clientDir, "data"),
     XDG_CACHE_HOME: join(clientDir, "cache"),
     SUBPLUG_PROBE_DIR: probeDir,
-    SUBPLUG_PROBE_EXECUTE: probeExecute || probeTask ? "1" : "0",
+    SUBPLUG_PROBE_EXECUTE: probeExecute || probeTask || probeTools ? "1" : "0",
     SUBPLUG_PROBE_TASK: probeTask ? "1" : "0",
+    SUBPLUG_PROBE_TOOLS: probeTools ? "1" : "0",
     SUBPLUG_PROBE_PLUGIN_VERSION: JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version as string,
   }
   delete env.SUBPLUG_STORAGE_DIR
@@ -943,8 +947,8 @@ async function runSpike(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  if ((existingServerMode || probeExecute || probeTask || probeReplay) && !probeTuiState) {
-    throw new Error("--existing-server, --probe-execute, --probe-task and --probe-replay require --probe-tui-state")
+  if ((existingServerMode || probeExecute || probeTask || probeTools || probeReplay) && !probeTuiState) {
+    throw new Error("--existing-server, --probe-execute, --probe-task, --probe-tools and --probe-replay require --probe-tui-state")
   }
   if (existingServerMode && attachMode) {
     throw new Error("choose either --existing-server or --attach")

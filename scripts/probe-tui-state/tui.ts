@@ -39,6 +39,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 const maxWait = Math.max(5_000, Math.min(180_000, Number(process.env.SUBPLUG_PROBE_TIMEOUT_MS) || 90_000))
 const taskMode = process.env.SUBPLUG_PROBE_TASK === "1"
 const replayMode = process.env.SUBPLUG_PROBE_REPLAY === "1"
+const toolsMode = process.env.SUBPLUG_PROBE_TOOLS === "1"
 
 async function bounded<T>(operation: Promise<T>, label: string, timeoutMs = 10_000): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -130,6 +131,20 @@ function assistantPresent(messages: Session[]): boolean {
   )
 }
 
+/** Tool names are not private; the event payload omits them, the message does not. */
+function toolNames(messages: Session[]): string[] {
+  const names = new Set<string>()
+  for (const message of messages) {
+    if (message.type !== "assistant" || !Array.isArray(message.content)) continue
+    for (const entry of message.content) {
+      if (!entry || typeof entry !== "object" || (entry as { type?: unknown }).type !== "tool") continue
+      const name = (entry as { name?: unknown }).name
+      if (typeof name === "string" && name) names.add(name)
+    }
+  }
+  return [...names]
+}
+
 function sampleSession(ctx: ProbeContext, sessionID: string): Record<string, unknown> {
   const session = ctx.data.session.get(sessionID)
   return {
@@ -173,7 +188,7 @@ export default Plugin.define({
     void (async () => {
       const startedAt = Date.now()
       const execute = process.env.SUBPLUG_PROBE_EXECUTE === "1"
-      const events: Array<{ at: number; type: string; sessionID?: string; parentID?: string; fields: string[] }> = []
+      const events: Array<{ at: number; type: string; sessionID?: string; parentID?: string; tool?: string; fields: string[] }> = []
       const statuses: Array<{ at: number; value: string }> = []
       const costs: Array<{ at: number; value: number }> = []
       const errors: string[] = []
@@ -197,6 +212,9 @@ export default Plugin.define({
           "session.inbox.enqueued",
           "session.inbox.delivered",
           "session.usage.updated",
+          "session.tool.called",
+          "session.tool.success",
+          "session.tool.failed",
         ]) {
           const dispose = ctx.data.on?.(type, (event) => {
             const data = event && typeof event === "object" ? (event as { data?: unknown }).data : undefined
@@ -208,7 +226,12 @@ export default Plugin.define({
             const watched = [childID, taskChildID].filter((value): value is string => Boolean(value))
             if (watched.length && sessionID && !watched.includes(sessionID)) return
             if (events.length >= 200) return
-            events.push({ at: Date.now(), type, sessionID, parentID, fields: Object.keys(record).sort() })
+            // Tool names are not private payload; record them to tell a direct
+            // call from a Code Mode `execute` wrapper.
+            const tool = [record.tool, record.name, record.toolName].find(
+              (value): value is string => typeof value === "string" && value.length > 0,
+            )
+            events.push({ at: Date.now(), type, sessionID, parentID, tool, fields: Object.keys(record).sort() })
           })
           if (typeof dispose === "function") off.push(dispose)
         }
@@ -311,7 +334,11 @@ export default Plugin.define({
           const promptAt = Date.now()
           const admitted = await bounded(ctx.client.session.prompt({
             sessionID: childID,
-            text: execute ? "Reply with exactly PROBE_OK. Do not use tools." : "PROBE_TUI_STATE",
+            text: execute
+              ? (toolsMode
+                  ? "Call the swarm_status tool once with format json, then reply exactly PROBE_TOOL_DONE."
+                  : "Reply with exactly PROBE_OK. Do not use tools.")
+              : "PROBE_TUI_STATE",
             ...(execute ? {} : { resume: false }),
           }), "prompt admission", 20_000)
           const admittedAt = Date.now()
@@ -351,6 +378,10 @@ export default Plugin.define({
           const storeMessages = ctx.data.session.message.list(childID)
           const rootSample = sampleSession(ctx, rootID)
           const scratchSample = sampleSession(ctx, childID)
+          // Tool names are not private; the tool event omits the name, so read
+          // them from the assistant content instead.
+          const contextFinal = rows(await bounded(ctx.client.session.context({ sessionID: childID }), "context fetch").catch(() => undefined))
+          const toolsUsed = [...new Set([...toolNames(storeMessages), ...toolNames(contextFinal)])]
           result = {
             remote,
             locationAvailable: Boolean(ctx.location?.directory),
@@ -368,6 +399,7 @@ export default Plugin.define({
             admittedAt,
             admissionMs: admittedAt - promptAt,
             assistantAt,
+            toolsUsed,
             execution: execute ? { sawBusy, sawIdleAfterBusy, sawAssistant } : undefined,
           }
           if (!admitted?.id) errors.push("prompt admission did not return a message id")
