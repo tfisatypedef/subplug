@@ -1370,3 +1370,82 @@ release decision; the artifact and smoke check are prepared.
    R4 done; R5 done except publish (artifact prepared and smoke-checked on Linux).
 5. Make the separate integration/publish decision when evidence is ready.
    Current decision (2026-09-30): no merge yet, no publish; artifacts prepared.
+
+## Public README + v2 → main release plan (2026-09-29)
+
+Working branch: `v7-remote` (v2 plugin). Default branch `origin/HEAD -> main` was
+still the v1 plugin. Package `subplug@0.3.0`.
+
+### Already landed on this branch
+
+- **Project-specific hub selection.** `selectHubDir()` in `src/hub/paths.ts`;
+  the TUI (`src/tui/index.tsx`) accepts the server's `hub.json` pointer only
+  when `pointer.group` matches its own group (`cfg.hubGroup ?? projectIDFor`).
+  Tests in `test/hub-pointer.test.ts`.
+- **Dead option removed.** `coord.injectIdentity` (and `SUBPLUG_INJECT_IDENTITY`)
+  dropped from `SubplugOptions`/`resolveOptions`; injection stays always-on in
+  coordination repos. Call sites updated in `test/server.test.ts`,
+  `test/lease-enforcement.test.ts`, `scripts/dev-harness.ts`.
+- **Docs split.** `CONTRIBUTING.md` created; README trimmed by moving dev
+  harness / two-device / publishing / manual-verification detail out.
+- **Single-entry install.** README no longer duplicates the package in
+  `opencode.json` + `cli.json`. `package.json` ships `CONTRIBUTING.md`.
+
+### Facts that shaped the install docs
+
+- `npm view subplug` → **404**. `subplug` was not published, so
+  `opencode plugin add subplug` could not work yet.
+- `opencode plugin add --help`: package may be an *npm registry or Git package
+  specifier*. (`opencode plugin add|list|check|update|remove` all exist.)
+- `origin/HEAD -> origin/main` was the **v1** plugin; `v7-remote` was the v2 work.
+- Git fallback `opencode plugin add github:tfisatypedef/subplug` verified: it
+  installs into `~/.cache/opencode/npm/git-subplug-*` (fetches the default
+  branch, which is v2 after the merge).
+
+### README public pass (medium trim)
+
+- Intro cut to ~3 lines + one compatibility line; Nightly/canary sentence and
+  Runtime-boundary (Node) paragraph moved to CONTRIBUTING; `Bun >= 1.3` dropped
+  from README requirements (dev-only).
+- `## Install` shows one entry; the local-clone development section moved to
+  CONTRIBUTING.
+- `## Options` keeps the table and flags the common options.
+- Recovery contract and Remote attach condensed; Tailscale/WSL2/firewall detail
+  moved to CONTRIBUTING.
+- What gets recorded, TUI, Web view, swarm tools, and the Development pointer
+  kept.
+
+### CONTRIBUTING additions
+
+Local-clone install, Bun requirement/setup, Runtime boundary (Node),
+Nightly/canary note, Recovery contract detail, Remote-attach detail.
+
+### Merge v2 → main — DONE
+
+- `v7-remote` committed (3 logical commits: hub selection, remove
+  injectIdentity, docs) and pushed (`e7a4cf5`).
+- Merged `v7-remote` into `main` (`fc7e7d0`) and pushed. `main` now carries the
+  v2 plugin.
+- Conflicts resolved: README.md / PLAN.md / src/tui/index.tsx / test files taken
+  from v7; `src/hub/monitor.ts` combined (main's session retention + v7's
+  `source: "hub"`); `src/server/index.ts` taken from v7 then hand-patched with
+  main's session-retention restore and send-rate reservation.
+- Auto-merged v1 fixes now in v2: comms receipt ordering, `readSessionRecords`
+  retention, web transcript request/generation guards.
+- Verified on the merged tree: typecheck clean, 206 pass / 0 fail.
+- Note: main's v1-only `comms.enabled` option was intentionally not ported to
+  v2; v2 keeps `comms.inject` for inbox injection. Revisit if needed.
+
+### Release steps — DONE
+
+- README npm-status note removed (`2c13651`); pushed.
+- `v7-remote` fast-forwarded to `main` (`bf27d68`) and pushed.
+- Annotated tag `v0.3.0` created (`bf27d68`) and pushed.
+- Plan docs re-tracked project-local; `.gitignore` no longer lists them.
+- Metadata `author`/`homepage`/`bugs` added (`deacc98`, `025af25`).
+- Publish readiness verified: `publint` clean; `npm pack --dry-run` 65.6 kB /
+  36 files; `npm publish --dry-run` succeeds; local `npm install <tarball>`
+  resolves `@opencode/plugin@2.0.20` with 0 vulnerabilities and Bun loads the
+  server entry.
+- Remaining: npm registration/login (owner), then `npm publish` (or
+  `npm stage publish` + 2FA approval). `v0.3.0` tag remains at `bf27d68`.
