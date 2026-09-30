@@ -375,29 +375,34 @@ inbound LAN connections without host port forwarding).
 
 The probe requires subplug to be **active on the server**, not just the client
 (`--existing-server` reads `/api/plugin` and fails if the server entry is
-missing). subplug is not on npm yet, so install from the packed tarball:
+missing). The plugin loader accepts a directory, so install from a clone (the
+repo is public). Use `-b v7-remote` — the default branch is the v1 plugin:
 
 ```sh
 npm install -g @opencode/cli          # verified 2.0.20
-# on the dev machine: npm pack -> subplug-0.3.0.tgz; copy it over, then:
-mkdir -p ~/subplug-pkg
-tar -xzf subplug-0.3.0.tgz -C ~/subplug-pkg --strip-components=1
-(cd ~/subplug-pkg && npm install)
+git clone -b v7-remote https://github.com/tfisatypedef/subplug.git ~/subplug
+(cd ~/subplug && bun install)         # or npm install
 mkdir -p ~/subplug-server
 cat > ~/subplug-server/opencode.json <<'JSON'
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": [{ "package": "/home/<user>/subplug-pkg", "options": { "coord": { "injectIdentity": true } } }]
+  "plugins": [{ "package": "/home/<user>/subplug", "options": { "coord": { "injectIdentity": true } } }]
 }
 JSON
 # optional: only needed if you also open a TUI on the server device
 cat > ~/subplug-server/cli.json <<'JSON'
 {
   "$schema": "https://opencode.ai/v2/cli.json",
-  "plugins": [{ "package": "/home/<user>/subplug-pkg", "options": {} }]
+  "plugins": [{ "package": "/home/<user>/subplug", "options": {} }]
 }
 JSON
 ```
+
+For a clean evidence trail, pin both sides to the same commit before the run
+(`git -C ~/subplug rev-parse HEAD` should match `git rev-parse HEAD` here);
+otherwise re-pull both. To verify the exact npm artifact instead of a checkout,
+`npm pack`, extract `subplug-0.3.0.tgz`, `npm install` inside it, and point
+`package` at that directory.
 
 Configure a model/provider on the server (e.g. `opencode2 auth login`), then
 start it and allow TCP 4096 through the host firewall:

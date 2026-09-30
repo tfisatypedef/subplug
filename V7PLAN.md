@@ -356,10 +356,13 @@ server, then perform the visible UI checks on the same session.
 Runbook: README "LAN acceptance (two devices)". It was rehearsed single-machine
 (2026-09-30) against a server bound to the client's non-loopback interface: the
 server-side plugin inventory check (`serverPluginLoaded`) and the client plugin
-check both pass in hydrate mode, and the endpoint/firewall steps work. That
-rehearsal does **not** establish remote detection (`remote` stays `false` when
-the endpoint is a local interface), model execution, or the UI items; those
-still need the real second device and a configured model.
+check both pass in hydrate mode, and the endpoint/firewall steps work. The
+server loads subplug from a `v7-remote` checkout (or, to validate the npm
+artifact, the packed tarball); pin both sides to the same commit before the run
+(`13434f0` at the time of writing). That rehearsal does **not** establish
+remote detection (`remote` stays `false` when the endpoint is a local
+interface), model execution, or the UI items; those still need the real second
+device and a configured model.
 
 Acceptance: preserve a redacted JSON report plus a short manual-check record
 with device OS, versions, polling interval, outcomes, and observed limitations.
