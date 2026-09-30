@@ -108,6 +108,12 @@ export function DetailsPane(props: {
           {age(details().command!.ts, details().now)} ago
         </text>
       ) : null}
+      {props.state().source === "remote" && !details().claims.length ? (
+        <>
+          <text flexShrink={0}> </text>
+          <text flexShrink={0} fg={skin().muted}>Claims unavailable on remote attach</text>
+        </>
+      ) : null}
       {details().claims.length ? (
         <>
           <text flexShrink={0}> </text>

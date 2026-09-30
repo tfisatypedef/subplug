@@ -52,11 +52,12 @@ export function Dashboard(props: {
   const sessions = () => snapshot().sessions
   const width = () => props.ctx.renderer?.width ?? 120
   const [preferences, updatePreferences] = props.ctx.storage.store(PREFERENCES_KEY, {
-    initial: { collapsed: [] as string[], grouping: "project" as string },
+    initial: { collapsed: [] as string[], grouping: "project" as string, flat: false },
   })
   const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set(preferences.collapsed))
   const [filterIndex, setFilterIndex] = createSignal(0)
   const [grouping, setGrouping] = createSignal<Grouping>(isGrouping(preferences.grouping) ? preferences.grouping : "project")
+  const [flat, setFlat] = createSignal(Boolean(preferences.flat))
   const [selectedTask, setSelectedTask] = createSignal(0)
   const [help, setHelp] = createSignal(false)
   const [search, setSearch] = createSignal("")
@@ -68,6 +69,7 @@ export function Dashboard(props: {
       filter: TASK_FILTERS[filterIndex()]?.group ?? null,
       search: search(),
       grouping: grouping(),
+      flat: flat(),
       state: view(),
     }),
   )
@@ -84,10 +86,11 @@ export function Dashboard(props: {
   const showStatus = () => listWidth() >= 56
   const titleWidth = () => Math.max(8, listWidth() - 5 - (showStatus() ? 11 : 0) - 9)
 
-  const persist = (patch: { collapsed?: string[]; grouping?: Grouping }): void => {
+  const persist = (patch: { collapsed?: string[]; grouping?: Grouping; flat?: boolean }): void => {
     void updatePreferences((draft) => {
       if (patch.collapsed) draft.collapsed = patch.collapsed
       if (patch.grouping) draft.grouping = patch.grouping
+      if (patch.flat !== undefined) draft.flat = patch.flat
     })
   }
   const move = (delta: number) => {
@@ -104,8 +107,9 @@ export function Dashboard(props: {
     const task = selected()
     if (task) props.openSession(task.session.sessionID)
   }
+  const collapsible = () => grouping() === "hierarchy" || (grouping() === "project" && !flat())
   const setCollapse = (collapse: boolean) => {
-    if (grouping() !== "hierarchy") return
+    if (!collapsible()) return
     const task = selected()
     if (!task || !task.hasChildren) return
     const next = new Set(collapsed())
@@ -113,6 +117,12 @@ export function Dashboard(props: {
     else next.delete(task.session.sessionID)
     setCollapsed(next)
     persist({ collapsed: [...next] })
+  }
+  const toggleFlat = () => {
+    const next = !flat()
+    setFlat(next)
+    setSelectedTask(0)
+    persist({ flat: next })
   }
   const cycleFilter = (delta: number) => {
     setFilterIndex((index) => (index + delta + TASK_FILTERS.length) % TASK_FILTERS.length)
@@ -143,6 +153,7 @@ export function Dashboard(props: {
     open,
     filter: cycleFilter,
     group: cycleGrouping,
+    breakAway: toggleFlat,
     search: () => void openSearch(),
     help: () => setHelp((value) => !value),
     compose: () => {
@@ -180,13 +191,18 @@ export function Dashboard(props: {
           <text flexShrink={0} fg={skin().text}>
             <b>subplug</b>
             <span style={{ fg: skin().muted }}> command center</span>
-            <span style={{ fg: skin().secondary }}>  Group: {groupingLabel(grouping())}  g</span>
+            <span style={{ fg: skin().secondary }}>
+              {"  Group: "}{groupingLabel(grouping())}{grouping() === "project" && flat() ? " · flat" : ""}{"  g"}
+            </span>
           </text>
           <text flexShrink={0} fg={skin().muted}>
-            claims {snapshot().registry.claims.filter((claim) => claim.status === "active").length} active
-            {snapshot().registry.conflicts.length
-              ? ` · ${snapshot().registry.conflicts.length} conflict${snapshot().registry.conflicts.length === 1 ? "" : "s"}`
-              : ""}
+            {snapshot().source === "remote"
+              ? "remote attach · claims unavailable"
+              : `claims ${snapshot().registry.claims.filter((claim) => claim.status === "active").length} active${
+                  snapshot().registry.conflicts.length
+                    ? ` · ${snapshot().registry.conflicts.length} conflict${snapshot().registry.conflicts.length === 1 ? "" : "s"}`
+                    : ""
+                }`}
           </text>
         </box>
 
@@ -219,8 +235,8 @@ export function Dashboard(props: {
             <text flexShrink={0} fg={skin().text}>  ↑/↓ move · pgup/pgdn page · home/end jump</text>
             <text flexShrink={0} fg={skin().text}>  enter open session · f/m follow-up</text>
             <text flexShrink={0} fg={skin().muted}>View</text>
-            <text flexShrink={0} fg={skin().text}>  tab/shift+tab filter · g group · / search · ? help</text>
-            <text flexShrink={0} fg={skin().text}>  ←/→ collapse/expand (hierarchy) · esc/q back</text>
+            <text flexShrink={0} fg={skin().text}>  tab/shift+tab filter · g group · b break away · / search · ? help</text>
+            <text flexShrink={0} fg={skin().text}>  ←/→ collapse/expand (tree or nested project) · esc/q back</text>
           </box>
         ) : (
           <box flexDirection="row" flexGrow={1} minHeight={0} gap={2}>
@@ -299,7 +315,7 @@ export function Dashboard(props: {
         )}
 
         <text flexShrink={0} fg={skin().muted}>
-          ↑/↓ move · enter open · tab filter · g group · / search · ? help · f/m follow-up · esc/q back
+          ↑/↓ move · enter open · tab filter · g group · b break away · / search · ? help · f/m follow-up · esc/q back
         </text>
       </box>
     </box>

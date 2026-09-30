@@ -2,6 +2,7 @@ import type { JSX } from "@opentui/solid"
 import type { V2ModelInfo, V2SessionInfo } from "./data.ts"
 import type { V2Message } from "../shared/transcript.ts"
 import type { ThemeLike } from "./presentation.ts"
+import { parseRemoteMode, type RemoteMode } from "./remote.ts"
 
 export type TuiRoute =
   | { readonly type: "home" }
@@ -103,6 +104,9 @@ export type TuiContextLike = {
       list: () => V2SessionInfo[] | undefined
       get: (sessionID: string) => V2SessionInfo | undefined
       status: (sessionID: string) => "idle" | "running"
+      root?: (sessionID: string) => string
+      family?: (sessionID: string) => string[]
+      cost?: (sessionID: string) => number
       readonly message: {
         list: (sessionID: string) => V2Message[]
         sync: (sessionID: string) => Promise<void>
@@ -115,6 +119,9 @@ export type TuiContextLike = {
     readonly on?: (type: string, handler: (event: unknown) => void) => (() => void) | void
   }
   readonly client: {
+    readonly server?: {
+      readonly info?: () => Promise<unknown>
+    }
     readonly session: {
       get: (input: { readonly sessionID: string }) => Promise<unknown>
       context: (input: { readonly sessionID: string }) => Promise<unknown>
@@ -136,6 +143,7 @@ export type SubplugTuiOptions = {
   sidebarAspect: number
   storageDir?: string
   hubGroup?: string
+  remote: RemoteMode
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -162,5 +170,6 @@ export function resolveTuiOptions(options?: Readonly<Record<string, unknown>>): 
       process.env.SUBPLUG_STORAGE_DIR ||
       undefined,
     hubGroup: pick(options?.hubGroup, "") || pick(coord?.hubGroup, "") || process.env.SUBPLUG_HUB_GROUP || undefined,
+    remote: parseRemoteMode(options?.remote ?? coord?.remote ?? process.env.SUBPLUG_REMOTE),
   }
 }

@@ -136,6 +136,10 @@ var COLORS = { needs: "#ff5555", working: "#55ff55", ready: "#5f87ff", inactive:
 var current = null;
 var filter = "all";
 var selected = null;
+var transcriptRequest = 0;
+var transcriptApplied = 0;
+var selectionGeneration = 0;
+var transcriptContent = null;
 
 function withToken(path) {
   if (!token) return path;
@@ -162,8 +166,10 @@ function dot(group) {
 async function pull() {
   try {
     var response = await fetch(withToken("/api/state"));
+    if (!response.ok) throw new Error("state request failed");
     current = await response.json();
     render();
+    if (selected) loadTranscript(selected);
   } catch (error) {
     document.getElementById("meta").textContent = "connection lost";
   }
@@ -207,7 +213,14 @@ function render() {
       + '<span class="muted">' + esc(state.groupLabels[group] || group) + "</span>"
       + '<span class="muted">' + esc(session.agent || "-") + "</span>"
       + '<span class="muted">' + age(session.lastEventAt || state.generatedAt, state.generatedAt) + "</span>";
-    row.onclick = function () { selected = session.sessionID; render(); loadTranscript(session.sessionID); };
+    row.onclick = function () {
+      if (selected !== session.sessionID) {
+        selectionGeneration += 1;
+        transcriptContent = null;
+        document.getElementById("transcript").textContent = "loading...";
+      }
+      selected = session.sessionID; render(); loadTranscript(session.sessionID);
+    };
     list.appendChild(row);
   });
   document.getElementById("sessionCount").textContent = "(" + state.sessions.length + ")";
@@ -233,20 +246,28 @@ function render() {
 }
 async function loadTranscript(sessionID) {
   var panel = document.getElementById("transcript");
-  panel.textContent = "loading...";
+  var request = ++transcriptRequest;
+  var generation = selectionGeneration;
   try {
     var response = await fetch(withToken("/api/session/" + encodeURIComponent(sessionID)));
+    if (!response.ok) throw new Error("transcript request failed");
     var data = await response.json();
-    if (!data.messages || !data.messages.length) {
-      panel.textContent = "no transcript";
-      return;
-    }
-    panel.innerHTML = data.messages.map(function (message) {
+    if (selected !== sessionID || generation !== selectionGeneration || request < transcriptApplied) return;
+    transcriptApplied = request;
+    var content = (data.messages || []).map(function (message) {
       var who = esc(message.role) + (message.agent ? " | " + esc(message.agent) : "");
       return '<div><span class="muted">' + who + ":</span>\\n" + esc(message.text) + "</div>";
     }).join("\\n");
+    if (!content) content = "no transcript";
+    if (content !== transcriptContent) {
+      panel.innerHTML = content;
+      transcriptContent = content;
+    }
   } catch (error) {
-    panel.textContent = "transcript unavailable";
+    if (selected === sessionID && generation === selectionGeneration && request >= transcriptApplied && transcriptContent === null) {
+      transcriptApplied = request;
+      panel.textContent = "transcript unavailable";
+    }
   }
 }
 setInterval(pull, 1000);

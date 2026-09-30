@@ -173,4 +173,34 @@ describe("v2 session helpers", () => {
       },
     ])
   })
+
+  test("backfill skips malformed rows and never re-adds known or deleted sessions", () => {
+    const records: EventRecord[] = []
+    const written = backfillSessions(
+      new Set(["ses_known", "ses_deleted"]),
+      [
+        { title: "no id" } as V2SessionInfo,
+        { id: "ses_known" },
+        { id: "ses_deleted" },
+        { id: "ses_new", title: "fresh" },
+      ],
+      (record) => records.push(record),
+      "subplug-tui",
+      7,
+    )
+    expect(written).toBe(1)
+    expect(records.map((record) => record.sessionID)).toEqual(["ses_new"])
+  })
+
+  test("backfill is a no-op for an empty list and a failing native lookup yields none", async () => {
+    const records: EventRecord[] = []
+    expect(backfillSessions(new Set(), [], (record) => records.push(record), "srv", 1)).toBe(0)
+    expect(records).toEqual([])
+
+    const failed = makeContext()
+    failed.ctx.client.session.list = async () => {
+      throw new Error("offline")
+    }
+    expect(await listNativeSessions(failed.ctx)).toEqual([])
+  })
 })

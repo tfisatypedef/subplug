@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import {
   buildInboxBlock,
+  applyCommsRecord,
   foldComms,
   inboxFor,
   messageSummary,
@@ -8,6 +9,10 @@ import {
 } from "../src/hub/comms.ts"
 import { foldSessions } from "../src/hub/fold.ts"
 import type { CommsPointer, EventRecord, SessionNode } from "../src/shared/types.ts"
+import { EventLog, EventTail } from "../src/hub/append.ts"
+import { mkdtempSync, rmSync } from "node:fs"
+import { join } from "node:path"
+import { tmpdir } from "node:os"
 
 function record(overrides: Partial<EventRecord> & { kind: EventRecord["kind"] }): EventRecord {
   return { ts: 1000, serverID: "srv1", ...overrides }
@@ -39,6 +44,30 @@ describe("messageSummary", () => {
 })
 
 describe("foldComms", () => {
+  test("out-of-order receipts survive independent tail reads and cannot regress seen", () => {
+    const dir = mkdtempSync(join(tmpdir(), "subplug-receipts-"))
+    try {
+      const reader = new EventLog(dir, "a_reader")
+      const sender = new EventLog(dir, "z_sender")
+      const tail = new EventTail()
+      const pointers = new Map<string, CommsPointer>()
+      reader.append(record({ ts: 3, serverID: "a_reader", kind: "comms.seen", refs: { msgID: "m1" } }))
+      for (const event of tail.read(dir)) applyCommsRecord(pointers, event)
+      expect(pointers.size).toBe(0)
+      sender.append(record({ ts: 1, serverID: "z_sender", kind: "comms.sent", refs: { msgID: "m1", to: "child" }, summary: "ping" }))
+      for (const event of tail.read(dir)) applyCommsRecord(pointers, event)
+      expect(pointers.get("m1")).toMatchObject({ state: "seen", ts: 1, at: 3, to: "child", summary: "ping" })
+      reader.append(record({ ts: 2, serverID: "a_reader", kind: "comms.delivered", refs: { msgID: "m1" } }))
+      for (const event of tail.read(dir)) applyCommsRecord(pointers, event)
+      expect(pointers.get("m1")).toMatchObject({ state: "seen", at: 3 })
+      expect(inboxFor([...pointers.values()], "child", { now: 4 })).toEqual([])
+      // The same receipt-first alphabetical order must work within one poll.
+      const together = new Map<string, CommsPointer>()
+      for (const event of new EventTail().read(dir)) applyCommsRecord(together, event)
+      expect(together.get("m1")?.state).toBe("seen")
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
   test("folds sent to delivered to seen and keeps metadata", () => {
     const pointers = foldComms([
       record({

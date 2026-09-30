@@ -130,6 +130,8 @@ export type CommsPointer = {
 export type MonitorState = {
   generatedAt: number
   hubDir: string
+  /** Where this state came from: the local hub, or a remote attach (no hub). */
+  source?: "hub" | "remote"
   sessions: SessionNode[]
   risks: RiskRecord[]
   recentCommands: EventRecord[]

@@ -27,11 +27,21 @@ child links, agent names, and models even if creation events were missed.
 
 ## OpenCode v2 migration (branch `v2`) — plan
 
-Status: **v2 port complete (V0–V6 done, 2026-09-29); branch ready to merge.**
-This section describes this branch. The v1 sections below describe `main` (the
+Status: **v2 port complete (V0–V6 done, 2026-09-29); V7 remote attach
+implemented on `v7-remote`; branch ready to merge.** This section describes this
+branch. The v1 sections below describe `main` (the
 shipped 1.18 plugin) and stay as the historical reference. Development ran
-against `@opencode/cli@dev` (`0.0.0-dev-20288`, 2026-09-29); see the V0–V6
-results sections.
+against `@opencode/cli@dev` (`0.0.0-dev-20288`, 2026-09-29) and the release
+host `@opencode/cli` `2.0.20`; see the V0–V6 results sections.
+
+Current status (2026-09-29): the v2 port (V0–V6) and the V7 remote-attach
+feature are implemented. `v7-remote` adds hub-free remote render/actions
+(V7.1–V7.5) plus review fixes (V7.R0) and probes (V7.R1) whose single-machine
+execution and task-child runs pass on `2.0.20`; PLAN R1, R2 and R4 are done.
+Remaining: V7.R2 two-device LAN acceptance (needs a second device), PLAN R3
+visual checks (needs an interactive terminal), and PLAN R5 release
+preparation. See "Current remaining work specification" at the end of this
+file and `V7PLAN.md`.
 
 Scope: port subplug to opencode **2.x only** — server plugin plus CLI/TUI plugin.
 No dual `server()`/`setup()` package; v1 support remains on `main`. Reference
@@ -571,19 +581,26 @@ Recipe for V5: `npm i @opencode/cli@dev`, serve with the env above, Basic auth
 
 ### Open questions (remaining)
 
-1. Whether durable events replay to a plugin that subscribes after they were
-   published (affects any baseline recovery); V0–V6 only saw live events, so
-   the hub log plus TUI backfill remains the recovery path.
-2. Node-hosted CLI plugin loading (precompiled) versus shipping TS source.
-3. Direct (non-Code-Mode) `session.tool.called` shape and the `task` subagent
-   input; `session.created.parentID` is sufficient per schema, but no live
-   subagent run exercised it after the v2 port (the old `--probe-task` used v1
-   endpoints).
+1. ~~Whether durable events replay to a plugin that subscribes after they were
+   published.~~ **Resolved (R2, `2.0.20`): no replay.** A late subscriber
+   received no pre-existing session events while a live event in the same
+   window arrived; recovery is the hub log plus TUI backfill.
+2. ~~Node-hosted CLI plugin loading (precompiled) versus shipping TS source.~~
+   **Resolved (R4, `2.0.20`): no Node host exists.** The CLI ships a compiled
+   per-platform binary that runs plugins under embedded Bun, so TS source
+   exports are retained (Bun-only boundary documented in README).
+3. ~~Direct (non-Code-Mode) `session.tool.called` shape and the `task` subagent
+   input.~~ **Resolved (R1):** `--probe-task` confirmed a real task child emits
+   `session.created` with `parentID` and `agent` and folds as a `subagent` with
+   a distinct identity; `--probe-tools` showed the tool event carries no tool
+   name and that the model invoked a direct named `swarm_status` entry with no
+   `execute` Code Mode wrapper.
 4. Sidebar slot ordering/placement after built-ins: the plugin uses `append`
    to `sidebar.content`; `before`/`after`/`prepend` were not compared visually.
-5. Which release emits `session.status`/`session.execution.succeeded`; the dev
-   build did not, so status folding keyed off `session.execution.*` and step
-   events with the host events as a bonus if present.
+5. ~~Which release emits `session.status`/`session.execution.succeeded`.~~
+   **Resolved (R1, `2.0.20`):** `session.execution.started/succeeded` fire and
+   `session.status`/`session.idle` do not, so status folding correctly keys off
+   `session.execution.*` with the host events as a bonus if present.
 
 ## Locked decisions
 
@@ -713,7 +730,9 @@ subplug/
 - **P3 — coordination bridge.** Read `coordination/claims/*.jsonl` (fallback
   `coord.py list --json`); overlay claims/expiry/conflicts/needs-test; watch
   `tool.execute.before` bash for `git commit|push|coord` and toast warnings
-  (never gate). *Accept*: seeded registry shows claims, expiry countdown,
+  (coverage checks warn only). Edit tools separately enforce exact-path leases
+  in coordination-enabled repositories; monitoring remains read-only.
+  *Accept*: seeded registry shows claims, expiry countdown,
   conflict badge, commit-without-coverage warning.
 - **P4 — viewing subagents.** Tree rendering, live transcripts (full parts),
   rollups, `swarm_status` tree format, on-demand context/diff. Read-only.
@@ -754,8 +773,9 @@ subplug/
   replay; `chat.message` reads only that map after the memoized `ensure()`.
 - Cross-session content is untrusted input; frame as data, never inject via
   the system prompt by default.
-- Agent-to-agent loops and token burn: addressed-only, no auto-reply, hop
-  cap <= 2, per-session send caps.
+- Agent-to-agent loops and token burn: addressed-only, no auto-reply, and
+  per-session send caps. A hop cap <= 2 is deferred: current message pointers
+  expose no reliable causal chain for determining a reply's hop count.
 - Busy sends are confirmed (`swarm_send` refuses without `confirm: true`; the TUI
   composer asks first) and are consumed at the next step boundary.
 - ~~`comms.*` records must not flow through `fold.ts`'s default `ensure()` path.~~
@@ -816,9 +836,13 @@ Confirmed against opencode 1.18.32 with the dev harness (scratch
   sync store backing `api.state.session.*` (v1 `Message`/`Part`, global maps
   keyed by id) and a durable `session.next.*` store keyed by `sessionID`;
   neither is assumed for subplug, which reads the flat client.
-- Target policy: idle/background subagents and roots by default; busy targets
-  require an explicit confirm; in-flight synchronous children are refused with
-  an offer to promote them to background (`experimental.session.background`).
+- Target policy: roots and children are addressable; busy targets require
+  explicit confirmation. Refusing in-flight synchronous children and offering
+  background promotion is deferred: the exposed session metadata has no durable
+  synchronous/background flag, so the implementation cannot classify them reliably.
+- Delivery opt-out: `comms.enabled` defaults to true; false blocks explicit sends
+  and synthetic notices (configure both server and TUI). `comms.inject: false`
+  suppresses notices only and still permits explicit sends.
 
 ### Verified mechanics (opencode 1.18.32, binary inspection)
 
@@ -1037,9 +1061,10 @@ over the TUI. Read-only, localhost, opt-in; the hub stays metadata-only.
   re-renders; the TUI's `readMonitorState` fold is reused verbatim.
 - **Auth**: localhost-only by default; optional `token` query param when set.
   Never bind `0.0.0.0`; document the risk if someone does.
-- **UI**: status filter tabs and grouping from `src/tui/command-center.ts`
-  (pure helpers, reusable) rendered as HTML; claims/conflicts, rollups, inbox
-  pointers, and a transcript panel for the selected session. No composer, no
+- **UI**: status filter tabs using shared `src/shared/status.ts` metadata,
+  rendered as HTML; claims/conflicts and a transcript panel for the selected
+  session. Browser subtree rollups and inbox panels are deferred; these remain
+  TUI features. No composer, no
   writes, no attention sounds.
 - **Tests**: `Bun.serve` handler as a pure module (request -> response) so
   `bun test` can hit it with a seeded hub; assert GET-only, token gating,
@@ -1049,7 +1074,16 @@ over the TUI. Read-only, localhost, opt-in; the hub stays metadata-only.
 
 Acceptance: with `web.enabled: true`, `http://127.0.0.1:7690` shows the same
 sessions/claims/conflicts as the TUI dashboard, updates within ~1s, and serves
-no writes; all existing tests plus the web handler tests pass.
+no writes; handler and generated-browser-script tests cover polling, slow
+responses, selection races, unchanged content, and transient failures.
+
+Current retention: each writer compacts session metadata into its own
+`events.<serverID>.jsonl.checkpoint` before dropping a rotated segment. Readers
+replay checkpoints plus logs globally by original timestamp (rotated records
+before active records for ties), retaining old fields for recently active
+sessions. `maxAgeMs` filters by session last activity; compact checkpoint metadata
+currently persists indefinitely on disk. Shared `snapshot.json` is not trusted
+as replay input. Checkpoint disk pruning remains deferred.
 
 ## Edit-lease drill findings (2026-09-28)
 
@@ -1119,3 +1153,299 @@ dead, so a competitor replaces the lease instead of being denied.
 > keep comms queue-only/addressed with metadata-only hub pointers. Harness
 > gotcha: random port, kill stale listeners; a zombie serve answers with stale
 > code.
+
+## Current remaining work specification (2026-09-29)
+
+This section supersedes the historical v1 "remaining" and handoff notes for
+the current `v7-remote` checkout. The v2 port and V7 feature implementation
+are present. V7 execution/LAN acceptance is specified in `V7PLAN.md` under
+"Remaining work specification"; its single-machine execution and task-child
+runs pass; a real two-device run over Tailscale has since passed the probe
+items (detection, execution, task-child, latency) and found two remote fixes,
+with the visible UI checks still pending. R0/R1 review fixes and
+probe work are committed on `v7-remote`; the suite passes 190 tests and
+`bun run typecheck` is clean.
+
+Linux baseline (WSL2/Ubuntu, 2026-09-30, Bun 1.3.3, opencode 2.0.20,
+`@opencode/plugin` 2.0.19): `bun install --frozen-lockfile`,
+`bun run typecheck`, `bun test`, `canary --load`, the local `npm
+pack` whitelist, and the harness matrix (spike, `--tui`, `--probe-tui-state`,
+`--probe-tui-state --attach`, `--probe-replay`, `--demo --keep`, `--inspect`)
+all pass. Two cold-start probe timing races (late-subscriber live delivery and
+attach message-store hydration) were hardened by `8e875bf`; no shipped code
+changed. A real two-device attach (Windows host over Tailscale, Linux/WSL
+client) then found a remote rendering bug: the dashboard enumerated only the
+reactive store, so pre-existing server sessions were invisible. Remote
+enumeration now uses `client.session.list()` with the store as fallback
+(`b94919b`), covered by two remote tests; the suite is 190.
+
+### R1 — live v2 event and subagent contract
+
+Resolve open questions 3 and 5 using the execution-capable V7 probe and one
+real task-created child. Record the installed host and plugin versions.
+
+- [x] Capture the event types and relevant field shapes for execution start,
+  successful completion, interruption, failure, retry, and task creation.
+  Exercise optional/failure paths only where the installed host supports
+  them; report unsupported paths explicitly. Evidence (opencode `2.0.20`,
+  plugin `0.2.0`, `opencode/nemotron-3.5-lightning-free`): `session.created`
+  carries `parentID`+`agent` for a task child (roots omit `parentID`);
+  `session.execution.started`/`succeeded`, `session.inbox.enqueued/delivered`,
+  `session.step.started/ended`, `session.usage.updated` all fire.
+  `session.status` and `session.idle` did **not** fire on this host, so the
+  `session.execution.*` fallback in `recordFor` is the working path.
+  Interruption/failure/retry were not exercised (optional path; not reported
+  as supported).
+- [x] Compare emitted records with `recordFor` and the TUI notification
+  subscriptions. Verify a successful run ends idle, a failed run does not
+  remain busy, and child `parentID`, agent/model when supplied, and distinct
+  coordination identity survive folding. Evidence: `--probe-execute` saw busy
+  then idle with an assistant transcript; `--probe-task` folded the child as
+  `kind: subagent` with `parentID` = root, `agent: general`, `model`, and a
+  distinct `Harness Agent@<host>/<sessionID>` identity. No mapping fix was
+  needed; the existing `recordFor`/`foldSessions` coverage already matches.
+  A failed run was not exercised.
+- [x] Verify both direct tools and Code Mode where available; document which
+  path ran. Restore a bounded v2 `--probe-task` only if automation is useful;
+  do not reuse the removed v1 HTTP endpoints. `--probe-task` is restored as an
+  opt-in mode that prompts the root to create one real `task` subagent and
+  checks the folded parent link. `--probe-tools` asks the model to call
+  `swarm_status` once. Observed on `2.0.20`: the assistant content records a
+  direct `swarm_status` tool entry — no `execute` Code Mode wrapper entry — and
+  `session.tool.called`/`failed`/`success` events carry no tool name
+  (`assistantMessageID`, `executed`, `id`, `input`, and `error` on failure), so
+  the routing is read from the message, not the event. The scratch call errored,
+  which does not affect the routing observation.
+
+Acceptance: redacted event-shape evidence, a correct folded root/child state,
+and regression tests for any mapping fix. Avoid committing full transcripts
+or credentials. Reuse the V7 run where it supplies the same evidence.
+Met on opencode `2.0.20` (Windows, 2026-09-29); tool routing is recorded above
+as a direct named tool with no Code Mode wrapper observed.
+
+### R2 — durable replay and recovery contract
+
+Resolve open question 1 without assuming that subscribing replays history.
+
+- [x] In an isolated workspace, create a root/child and emit events before
+  loading a probe subscriber. Compare what the late subscriber receives with
+  what a subscriber established before the run receives. `--probe-replay`
+  (fresh `SUBPLUG_HARNESS_DIR`) published two sessions, then attached a late
+  subscriber: no pre-existing events arrived, while a live session created
+  during the same window did. The TUI store also started cold (`sessionCount`
+  0 for pre-existing sessions) until backfill runs.
+- [x] Restart with the existing hub, then with an empty hub. Check server
+  tool visibility separately from TUI backfill, including parent links and
+  status. Identify which metadata is durable and which must be read live. The
+  restart leg retained the hub JSONL (7 records, 3 `session.created`) and
+  re-registered the tools (`features.server: true`, `state: active`) against
+  the existing hub. The empty-hub path is the ordinary cold start; the
+  activation-window gap is closed by TUI backfill. Status/cost/messages are
+  live reads, not hub state.
+- [x] Document the observed recovery guarantee. If acceptance requires more
+  recovery than the host provides, specify and implement a bounded native
+  session import through verified v2 APIs; do not rely on replay accidentally
+  observed in one development build. The guarantee is documented in README
+  under "Recovery contract". No new import was added: the existing TUI
+  backfill (`client.session.list()` → missing `session.created` records)
+  already covers the only recovery the host cannot do server-side, and the
+  server context still has no session-listing API.
+
+Acceptance: a reproducible restart matrix and an explicit recovery contract
+in README. Any added import has limits, no duplicate records, and tests for
+missing/deleted sessions and failing native lookups.
+Met on opencode `2.0.20` (Windows, 2026-09-29): `--probe-replay` is the
+reproducible matrix; `test/tui-data.test.ts` covers malformed rows, known and
+deleted sessions (no duplicates, no resurrection), an empty native list, and a
+failing native lookup. No import was added, so no new import limits apply.
+
+### R3 — visual v2 acceptance
+
+Resolve open question 4 and the outstanding visual checks on the current
+v2 host, rather than relying on the historical v1 screenshots.
+
+- [ ] Use `--demo --keep` and README's visual checklist to verify sidebar
+  placement, task selection, tabs/search/grouping, hierarchy expansion,
+  detail navigation/back, scrolling, claims/conflicts, and follow-up dialogs.
+- [ ] Check normal and narrow terminals, including a short terminal; controls
+  and selected rows must remain usable without text overlap.
+- [ ] Compare slot placement options only if the current appended sidebar
+  is obstructed or confusing; retain the current placement when it passes.
+- [ ] Verify risk/error/completion toast and attention behavior against live
+  events; synthetic demo evidence alone does not prove host event delivery.
+
+Acceptance: dated screenshots or a short recording and a concise checklist
+with host version and terminal dimensions. Report platform-specific issues.
+The remote variants are covered by V7.R2 rather than a duplicate run.
+
+### R4 — Node-host compatibility decision
+
+Open question 2 is a compatibility investigation, not an automatic build-system
+change. The package currently ships TypeScript source for the verified host.
+
+- [x] Identify a supported Node-hosted v2 distribution before adding it to the
+  compatibility matrix. Install the packed artifact into that host and check
+  server/TUI entrypoints, cleanup, and optional renderer peers. None exists:
+  `@opencode/cli@2.0.20` declares `bin.opencode`/`bin.opencode2` as
+  `./bin/opencode.exe` (a ~206 MB compiled binary) with per-platform
+  `@opencode/cli-<os>-<arch>` optional dependencies; `postinstall.mjs` only
+  selects the platform binary. The host runs plugins under its embedded Bun
+  runtime, so there is no Node host to install into.
+- [x] If that supported host cannot load the source, specify a compiled export
+  strategy and test the packed artifact against both distributions. Otherwise
+  retain source exports and document the verified runtime. Retained: source
+  exports, no compilation pipeline. `bun pm pack --dry-run` packs 35 files
+  including `server.ts`, `tui.tsx`, and `src/**` (TS source, no build output);
+  README documents the Bun-only boundary. The web view's `typeof Bun ===
+  "undefined"` guard (`src/server/web.ts:82`) already returns its clear
+  unavailable message.
+
+Acceptance: either evidence for supported Node loading or a documented Bun-only
+support boundary. The optional web view must give its existing clear unavailable
+message where `Bun.serve` is absent. Do not add a compilation pipeline merely to
+close a speculative question.
+Met on opencode `2.0.20` (Windows, 2026-09-29): Bun-only boundary documented in
+README; no pipeline added; the web guard is unchanged and still covered by
+`test/web.test.ts`.
+
+### R5 — documentation reconciliation and release
+
+- [x] Add a current-status summary pointing to these checklists and V7's
+  acceptance evidence. Preserve v1 history but label it clearly; remove stale
+  instructions from the active handoff. Update the test count after changes.
+  Added to the top v2 status section; suite is 188 tests. v1 sections remain
+  under their historical headings.
+- [x] Verify supported opencode versions against the live evidence; adjust
+  declared ranges only when compatibility results justify it. Validated on
+  `@opencode/cli` 2.0.20 with `@opencode/plugin` 2.0.19; `engines.opencode`
+  `>=2` and the declared `^2.0.19` line still hold, so the ranges are
+  unchanged.
+- [x] Run typecheck, the full suite, `canary --load`, and the harness server
+  spike against the intended release host. Verify Windows and Linux CI.
+  Windows (2026-09-29, `2.0.20`): typecheck clean, 188 pass, `canary --load`
+  OK (TUI loaded, version 0.3.0), harness spike OK. Linux (WSL2/Ubuntu,
+  2026-09-30, `2.0.20`, Bun 1.3.3): the same gates plus the local `npm pack`
+  whitelist and the full harness matrix pass, so the `ci.yml`
+  `test`/`canary`/`pack` jobs were reproduced locally instead of left to CI.
+- [x] Pack the package and install that tarball in isolated server/TUI config;
+  confirm both entrypoints, optional peers, and the documented options work.
+  Inspect tarball contents using the existing CI whitelist. `bun pm pack` →
+  `subplug-0.3.0.tgz` (60 KB, 35 files); extracted, `bun install`ed its
+  declared deps, and loaded that copy through `SUBPLUG_HARNESS_PLUGIN`: server
+  spike OK (`features.server`, identity via the `coord`/`storageDir` options)
+  and `--tui` OK (route `subplug`, version 0.3.0). Contents match `ci.yml`'s
+  whitelist (`server.ts`, `tui.tsx`, `src/**`, README, LICENSE, package.json;
+  no `test/` or `scripts/`). Repeated on Linux (2026-09-30): `npm pack` →
+  `subplug-0.3.0.tgz` (35 files), same whitelist, and the extracted artifact
+  loaded both entrypoints through `SUBPLUG_HARNESS_PLUGIN`.
+- [x] Choose the release version, write concise release notes, and record the
+  validated host version. Review/commit the fixes and acceptance evidence,
+  then integrate the branch through the project's normal review process.
+  Chose `0.3.0` (minor: remote attach); notes in `CHANGELOG.md`; validated
+  host `@opencode/cli` 2.0.20. Committed on `v7-remote`; branch integration
+  stays a separate review/merge decision.
+- [ ] Publish only after an explicit release decision; verify the published
+  artifact with the same isolated install smoke check. **Pending an explicit
+  decision**; the packed-artifact smoke above is the check to repeat after
+  publish.
+
+Acceptance: the release artifact loads successfully and all required gates
+pass. Failed gates block release; missing external prerequisites stay pending.
+No additional broad feature development is implied by this checklist.
+Met on Windows (`2.0.20`, 2026-09-29): every gate passes and the packed artifact
+loads both entries. Re-verified on Linux (`2.0.20`, Bun 1.3.3, 2026-09-30):
+every gate passes, the Linux CI jobs were reproduced locally, and the packed
+artifact loads both entries. The publish step remains pending an explicit
+release decision; the artifact and smoke check are prepared.
+
+### Execution order
+
+1. ~~Finish V7.R0 regression coverage and V7.R1 probe work.~~ Done.
+2. ~~Run R1/R2 locally with a configured model; run R3 visual checks.~~
+   R1/R2 done; R3 visual checks still need an interactive terminal.
+3. Run V7.R2 on two devices, sharing event/subagent evidence with R1. The
+   README runbook and the probe timing hardening are ready; the run needs the
+   second device's endpoint and a configured model.
+4. ~~Resolve R4's support boundary and complete R5 release preparation.~~
+   R4 done; R5 done except publish (artifact prepared and smoke-checked on Linux).
+5. Make the separate integration/publish decision when evidence is ready.
+   Current decision (2026-09-30): no merge yet, no publish; artifacts prepared.
+
+## Public README + v2 → main release plan (2026-09-29)
+
+Working branch: `v7-remote` (v2 plugin). Default branch `origin/HEAD -> main` was
+still the v1 plugin. Package `subplug@0.3.0`.
+
+### Already landed on this branch
+
+- **Project-specific hub selection.** `selectHubDir()` in `src/hub/paths.ts`;
+  the TUI (`src/tui/index.tsx`) accepts the server's `hub.json` pointer only
+  when `pointer.group` matches its own group (`cfg.hubGroup ?? projectIDFor`).
+  Tests in `test/hub-pointer.test.ts`.
+- **Dead option removed.** `coord.injectIdentity` (and `SUBPLUG_INJECT_IDENTITY`)
+  dropped from `SubplugOptions`/`resolveOptions`; injection stays always-on in
+  coordination repos. Call sites updated in `test/server.test.ts`,
+  `test/lease-enforcement.test.ts`, `scripts/dev-harness.ts`.
+- **Docs split.** `CONTRIBUTING.md` created; README trimmed by moving dev
+  harness / two-device / publishing / manual-verification detail out.
+- **Single-entry install.** README no longer duplicates the package in
+  `opencode.json` + `cli.json`. `package.json` ships `CONTRIBUTING.md`.
+
+### Facts that shaped the install docs
+
+- `npm view subplug` → **404**. `subplug` was not published, so
+  `opencode plugin add subplug` could not work yet.
+- `opencode plugin add --help`: package may be an *npm registry or Git package
+  specifier*. (`opencode plugin add|list|check|update|remove` all exist.)
+- `origin/HEAD -> origin/main` was the **v1** plugin; `v7-remote` was the v2 work.
+- Git fallback `opencode plugin add github:tfisatypedef/subplug` verified: it
+  installs into `~/.cache/opencode/npm/git-subplug-*` (fetches the default
+  branch, which is v2 after the merge).
+
+### README public pass (medium trim)
+
+- Intro cut to ~3 lines + one compatibility line; Nightly/canary sentence and
+  Runtime-boundary (Node) paragraph moved to CONTRIBUTING; `Bun >= 1.3` dropped
+  from README requirements (dev-only).
+- `## Install` shows one entry; the local-clone development section moved to
+  CONTRIBUTING.
+- `## Options` keeps the table and flags the common options.
+- Recovery contract and Remote attach condensed; Tailscale/WSL2/firewall detail
+  moved to CONTRIBUTING.
+- What gets recorded, TUI, Web view, swarm tools, and the Development pointer
+  kept.
+
+### CONTRIBUTING additions
+
+Local-clone install, Bun requirement/setup, Runtime boundary (Node),
+Nightly/canary note, Recovery contract detail, Remote-attach detail.
+
+### Merge v2 → main — DONE
+
+- `v7-remote` committed (3 logical commits: hub selection, remove
+  injectIdentity, docs) and pushed (`e7a4cf5`).
+- Merged `v7-remote` into `main` (`fc7e7d0`) and pushed. `main` now carries the
+  v2 plugin.
+- Conflicts resolved: README.md / PLAN.md / src/tui/index.tsx / test files taken
+  from v7; `src/hub/monitor.ts` combined (main's session retention + v7's
+  `source: "hub"`); `src/server/index.ts` taken from v7 then hand-patched with
+  main's session-retention restore and send-rate reservation.
+- Auto-merged v1 fixes now in v2: comms receipt ordering, `readSessionRecords`
+  retention, web transcript request/generation guards.
+- Verified on the merged tree: typecheck clean, 206 pass / 0 fail.
+- Note: main's v1-only `comms.enabled` option was intentionally not ported to
+  v2; v2 keeps `comms.inject` for inbox injection. Revisit if needed.
+
+### Release steps — DONE
+
+- README npm-status note removed (`2c13651`); pushed.
+- `v7-remote` fast-forwarded to `main` (`bf27d68`) and pushed.
+- Annotated tag `v0.3.0` created (`bf27d68`) and pushed.
+- Plan docs re-tracked project-local; `.gitignore` no longer lists them.
+- Metadata `author`/`homepage`/`bugs` added (`deacc98`, `025af25`).
+- Publish readiness verified: `publint` clean; `npm pack --dry-run` 65.6 kB /
+  36 files; `npm publish --dry-run` succeeds; local `npm install <tarball>`
+  resolves `@opencode/plugin@2.0.20` with 0 vulnerabilities and Bun loads the
+  server entry.
+- Remaining: npm registration/login (owner), then `npm publish` (or
+  `npm stage publish` + 2FA approval). `v0.3.0` tag remains at `bf27d68`.

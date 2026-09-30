@@ -81,3 +81,15 @@ export function readHubPointer(now = Date.now(), maxAgeMs = HUB_POINTER_MAX_AGE_
     at: record.at,
   }
 }
+
+/**
+ * The pointer file is global while hubs are per group, so a reader must not
+ * trust a pointer written by a server in another project. Accept the pointer
+ * only when it names this reader's group; when the reader cannot resolve a
+ * group, fall back to whatever the last server wrote.
+ */
+export function selectHubDir(input: { stateDir: string; group?: string; pointer?: HubPointer }): string {
+  const { stateDir, group, pointer } = input
+  if (pointer && (!group || pointer.group === group)) return pointer.hubDir
+  return hubRoot(stateDir, group ?? "unknown")
+}

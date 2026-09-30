@@ -6,93 +6,62 @@ claim registry. Viewing is read-only. An opt-out comms tier can send addressed
 messages between sessions with explicit delivery semantics (idle targets get a
 `steer`, running targets queue behind a confirmation): no abort, no broadcast.
 
-Compatible with opencode `2.x` (`@opencode/plugin` `^2.0.19`). Nightly
-`0.0.0-dev-*` builds are accepted by the canary. The TUI renderer packages
-(`@opentui/*`, `solid-js`) are declared as optional peer dependencies, so the
-host's copies are used and no duplicate Solid instance is installed.
-
-Requirements: [Bun](https://bun.sh) `>= 1.3` (for local dev) and opencode v2
-(the `opencode2` binary from `@opencode/cli`).
+Compatible with opencode `2.x` (`@opencode/plugin` `^2.0.19`). Requires opencode
+v2 from `@opencode/cli` (installed as `opencode`; `opencode2` is a legacy alias
+for the same binary). The TUI renderer packages (`@opentui/*`, `solid-js`) are
+optional peer dependencies, so the host's copies are used.
 
 ## Install
-
-opencode discovers both entrypoints from `package.json` `exports["./server"]`
-and `exports["./tui"]`, or from `server.ts` / `tui.tsx` when the package is a
-local directory. One spec installs the server and TUI plugins together.
-
-### From npm
 
 ```sh
 opencode plugin add subplug
 ```
 
-The CLI installs the package into the global config. Restart opencode
-afterwards. (The in-TUI plugin manager under `/plugins` can install, update,
-and list plugins instead.)
-
-### From a local clone (development)
+Or install straight from git instead of npm:
 
 ```sh
-git clone https://github.com/tfisatypedef/subplug.git ~/src/subplug
-cd ~/src/subplug && bun install          # runtime + test deps
+opencode plugin add github:tfisatypedef/subplug
 ```
 
-Then add the clone as a local plugin directory. Local specs must be
-directories; the host loads `server.ts` and `tui.tsx` from the root:
+Restart opencode afterwards. That is the whole config: the single entry loads
+the server and TUI plugins together and the TUI finds the server's hub
+automatically, so no `cli.json` entry is needed. The in-TUI plugin manager under
+`/plugins` can also install, update, and list plugins.
 
-`opencode.json` (server):
-
-```json
-{
-  "plugins": [{ "package": "/home/you/src/subplug", "options": { "storageDir": "/tmp/subplug-hub" } }]
-}
-```
-
-`cli.json` in the same config directory (TUI; options do not propagate from
-`opencode.json`):
-
-```json
-{
-  "plugins": [{ "package": "/home/you/src/subplug", "options": { "storageDir": "/tmp/subplug-hub" } }]
-}
-```
-
-### Manual config (published package)
-
-`opencode.json` (server) and `cli.json` (TUI), both in the config directory
-(global `OPENCODE_CONFIG_DIR` or a project's `.opencode/`):
+To set options, add them to the same `opencode.json` entry (see
+[Options](#options)):
 
 ```json
 {
   "plugins": [
-    { "package": "subplug", "options": { "comms": { "inject": true } } },
-    { "package": "subplug", "options": { "web": { "enabled": false } } }
+    { "package": "subplug", "options": { "comms": { "inject": true } } }
   ]
 }
 ```
 
-The server and TUI entries share one module; the host picks the right
-entrypoint from the package exports.
+To run from a local clone instead of npm/git, see
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### Update / remove
 
-- Update (npm): `opencode plugin update`, then restart opencode.
-- Update (clone): `cd /home/you/src/subplug && git pull && bun install`, then
-  restart opencode.
-- Remove: `opencode plugin remove subplug`, or delete the `plugins` entries
-  from `opencode.json` and `cli.json`.
+- Update: `opencode plugin update`, then restart opencode.
+- Remove: `opencode plugin remove subplug`, or delete the `plugins` entry from
+  `opencode.json`.
 
 ## Options
 
-Server options live in `opencode.json`; TUI options must be set in `cli.json`
-(or via `SUBPLUG_STORAGE_DIR`/`SUBPLUG_HUB_GROUP`), because opencode only
-passes plugin options to the entrypoint that declared them. When the TUI has no
+Server options live in `opencode.json`. TUI-only options (`route`,
+`intervalMs`, `sidebarAspect`, `remote`) can be set in `cli.json` or through
+`SUBPLUG_STORAGE_DIR`/`SUBPLUG_HUB_GROUP`/`SUBPLUG_REMOTE`. When the TUI has no
 explicit `storageDir`, it reads the hub pointer the server writes under
-`<stateDir>/subplug/hub.json`.
+`<stateDir>/subplug/hub.json`, and honors it only when it names the TUI's own
+project group.
+
+The everyday options are `comms.inject` and `web.enabled`; the rest tune the hub
+or the TUI and can usually be left at their defaults.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `coord.injectIdentity` | always on | Accepted for compatibility. In coordination-enabled repos the server prefixes `bash` tool commands with `export COORD_AGENT_ID=...`, so every session gets a distinct `<name>@<host>/<full session id>`; the base is cached per repository. |
 | `comms.inject` | `true` | Append pending inbox notices to the recipient's next prompt as one untrusted-data block (strict no-op when the inbox is empty); `false` disables. |
 | `storageDir` | opencode state dir | Override the hub root (also `SUBPLUG_STORAGE_DIR`). |
 | `hubGroup` | project id | Override the hub key so multiple clones/windows can share one hub (combine with a shared `storageDir`; also `SUBPLUG_HUB_GROUP`). Sanitized for the filesystem; degenerate values (`.`, `..`, empty) fall back to `unknown`. |
@@ -103,6 +72,7 @@ explicit `storageDir`, it reads the hub pointer the server writes under
 | `web.token` (server) | none | Optional `?token=` gate on every web request. |
 | `intervalMs` (TUI) | 1000 | Hub poll interval. |
 | `sidebarAspect` (TUI) | 0.5 | Fallback cell width/height ratio for the Agents panel when the terminal doesn't report pixel resolution (rows = `round(36 × aspect)`, clamped 11–24). |
+| `remote` (TUI) | `auto` | Detect a remote attach from `client.server.info().urls` versus local interfaces; `remote`/`local` force it (also `SUBPLUG_REMOTE`). On remote the TUI is hub-free: claims/comms unavailable. |
 | `route` (TUI) | `subplug` | Dashboard route name. |
 
 The dashboard command is the named keymap command `subplug.open` (default
@@ -128,27 +98,28 @@ started are still delivered on the next prompt; re-reads are idempotent
 The server plugin activates lazily on the first session at its location, so a
 session created at that exact moment can miss `session.created`. The TUI
 backfills native sessions it can enumerate into the hub, which closes the gap
-as soon as a TUI is open.
+as soon as a TUI is open. Backfill treats every session id already in the hub —
+including one recorded as `session.deleted` — as known, so it never writes a
+duplicate and never resurrects a deleted session.
+
+### Recovery contract
+
+The hub is the only durable state; the event stream is live-only, so history is
+never replayed. After a restart the server re-subscribes and re-registers its
+tools, and readers fold the retained JSONL + snapshot, so state (parent links,
+status, cost) survives. Live session state — status, cost, messages — is always
+read through the host; the hub holds appended metadata only, and a remote attach
+reads and writes no local hub at all.
 
 In coordination-enabled repos, a `git commit`/`git push`/`coord` command whose
 staged paths are not covered by the session's claims is recorded as a
-`command.risk` event (read-only check; nothing is ever blocked) and surfaced as
-a TUI toast.
-
-In coordination-enabled repos with `tools/coord.py`, `edit`, `write`, and
-`apply_patch` calls auto-acquire (or refresh) an exact-path edit lease for the
-calling session before the tool runs; a path leased by another session denies
-the call with the lease message. `apply_patch` checks every add/update/delete
-path plus both sides of a move. The denial is thrown from the tool hook, not
-swallowed by the monitoring catch. Shell commands that mutate files are not
-gated, and leases live in the per-worktree git directory, never in git.
-
-Hub layout: `<stateDir>/subplug/<hubKey>/events.<serverID>.jsonl` plus a folded
-`snapshot.json`, where `<hubKey>` is the project id unless `hubGroup` is set.
-Multiple servers append to separate files and every reader folds all of them,
-so several opencode windows on the same project aggregate automatically. To
-aggregate different clones, point them at the same `storageDir` and set the same
-`hubGroup`.
+`command.risk` event (read-only; nothing is blocked) and shown as a toast.
+`edit`, `write`, and `apply_patch` calls acquire exact-path edit leases before
+the tool runs; a path leased by another session denies the call. Hub layout is
+`<stateDir>/subplug/<hubKey>/events.<serverID>.jsonl` plus a folded
+`snapshot.json`; `<hubKey>` is the project id unless `hubGroup` is set, and
+several windows on one project aggregate automatically. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the full recovery contract.
 
 The server plugin also registers a `swarm_status` tool that returns the session
 tree plus active claims, conflicts, and the last passing verification. `format`
@@ -179,17 +150,21 @@ record the pointer only after the prompt is admitted.
   active-claim count. Clicking it opens the command center.
 - Dashboard route `subplug` — a codex-style **command center**: status filter
   tabs (`All / Needs you / Working / Ready / Inactive` with counts), grouping by
-  Project / Status / Agent / Hierarchy (default Project; Hierarchy keeps the
-  nested parent/child tree), and rows with a selection caret, status dot, title,
-  status column, and age. A right-hand details pane (terminals ≥ 90 columns)
+  Project / Status / Agent / Hierarchy (default Project, which nests each
+  subagent under its parent and collapses with `←`/`→`; Hierarchy is the global
+  parent/child tree; `b` breaks subagents back out into a flat list), and rows
+  with a selection caret, status dot, title, status column, and age. A
+  right-hand details pane (terminals ≥ 90 columns)
   shows the selected session's id, directory, agent, model, identity, subtree
   rollup, joined claims (`⇄` plus session id, with conflicting claims and their
   reasons in red), pending inbox, last command, and a short transcript preview.
   The header summarizes active claims and conflicts; click tabs to filter or
   rows to select the highlighted session. Open with `/subplug` or
   `ctrl+alt+a`. `↑`/`↓` selects, `pgup`/`pgdn` page, `home`/`end` jump,
-  `tab`/`shift+tab` cycles the filter, `g` cycles grouping, `/` opens a search
-  prompt. `?`/`h` toggles help; `←`/`→`/space collapse/expand in Hierarchy.
+  `tab`/`shift+tab` cycles the filter, `g` cycles grouping, `b` breaks away,
+  `/` opens a search
+  prompt. `?`/`h` toggles help; `←`/`→`/space collapse/expand in a nested
+  project or Hierarchy.
   Enter opens the selected session: it switches opencode when the host knows the
   session (including the in-plugin detail route for sessions this server does
   not own); lookup failures show an error toast. `esc`/`q` first closes help or
@@ -251,90 +226,39 @@ only, and never writes; message bodies stay in the native session store, never
 in the hub. The server guards the listener for Node-hosted CLIs and reports a
 clear error when `Bun.serve` is unavailable.
 
+## Remote attach
+
+Run sessions on one machine and drive the TUI from another (plugin-only; no
+core changes). Because v2 executes server-side, attaching already runs
+tools/shell/files on the server machine.
+
+On the server machine:
+
+```sh
+OPENCODE_PASSWORD=<password> opencode serve --hostname 0.0.0.0 --port 4096
+```
+
+On the client machine (`<server-ip>` is the server's LAN or encrypted-overlay
+address; a cross-device run must use one of those, not `127.0.0.1`, and the
+server's firewall must allow inbound TCP 4096):
+
+```sh
+OPENCODE_PASSWORD=<password> opencode --server http://<server-ip>:4096
+```
+
+subplug detects the attach automatically and renders from the attached server's
+live `data.session`/`client` state. A remote attach is **hub-free**: it never
+reads or writes the local hub, so claims, conflicts, risk toasts and command
+history report "claims unavailable on remote" instead of showing wrong data.
+Force the mode with the `remote` TUI option (`auto`/`remote`/`local`) or
+`SUBPLUG_REMOTE`. Plain-HTTP Basic auth is sniffable on a shared network, so use
+a trusted LAN or an encrypted overlay; one attached server at a time.
+
+Tailscale/WSL2 setup and the `tailscale serve` loopback caveat are in
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Development
 
-```sh
-bun install
-bun run typecheck
-bun test
-OPENCODE_BIN=/path/to/opencode2 bun run canary               # host is v2 + matching @opencode/plugin
-OPENCODE_BIN=/path/to/opencode2 bun run canary --load        # canary plus the headless TUI load harness
-bun run scripts/dev-harness.ts                               # headless server spike (scratch config + repo)
-bun run scripts/dev-harness.ts --tui                         # headless TUI load check (marker file)
-bun run scripts/dev-harness.ts --probe-tui-state             # plugin store + session.context coverage
-bun run scripts/dev-harness.ts --demo --keep                 # seed a hub and print TUI launch instructions
-```
-
-The harness resolves the host from `OPENCODE_BIN`, then `opencode2`, then
-`opencode`, so a v1 `opencode` on `PATH` does not shadow the v2 build. Each run
-uses a random port and an isolated XDG tree under
-`${SUBPLUG_HARNESS_DIR:-$TMPDIR/subplug-harness}`, so it never touches your real
-opencode state. `--keep` leaves the scratch dir behind. The workspace lives
-outside the repo on purpose: opencode watches local plugin sources, so state
-writes inside the repo would retrigger plugin reloads.
-
-The spike seeds a `coordination/claims` registry, starts a throwaway
-`opencode serve` with Basic auth under a scratch config, forces plugin
-activation, creates a session through `/api/session`, and checks the hub
-pointer, `server.start`/`session.created`/`session.identity` records, and the
-active plugin inventory.
-
-### Publishing
-
-`prepublishOnly` runs `typecheck` + `test`, so a broken tree cannot ship.
-Before publishing, run `bun run canary --load` against the v2 host, bump
-`version` in `package.json`, then `npm publish` (the `files` whitelist ships
-`server.ts`, `tui.tsx`, `src`, `README.md`, and `LICENSE`). CI verifies the
-tarball in the `pack` job and runs `canary --load` against `@opencode/cli@dev`
-in the `canary` job.
-
-## Manual verification
-
-### Visual TUI check
-
-```sh
-bun run scripts/dev-harness.ts --demo --keep
-# follow the printed launch instructions, e.g.:
-export OPENCODE_CONFIG_DIR="$TMPDIR/subplug-harness/config"
-opencode2 "$TMPDIR/subplug-harness/repo"
-```
-
-`--demo` seeds a root session (busy), a subagent (idle), a joined claim, a
-conflict, and a stale risk. In the TUI:
-
-- the sidebar **Agents** slot lists both sessions and the active-claim count;
-- `/subplug` opens the command center: filter tabs with counts, `g` cycles
-  grouping (Project → Status → Agent → Hierarchy; Hierarchy nests the subagent
-  under its parent with collapse via `←`/`→`), a per-selection details pane with
-  subtree rollup, joined claims (`⇄ <session>`), and conflict coloring;
-- Enter opens the detail view for a session this instance does not own (as in
-  the demo): breadcrumb, rolled-up subtree cost/counts, a pending **Inbox**
-  (seeded by `--demo`), and a live transcript that updates while the demo
-  subagent runs; `m` opens the composer, which confirms first when the target
-  is busy;
-- in a second terminal run `bun run scripts/dev-harness.ts --poke-risk` to
-  append a live risk and confirm the warning toast + attention sound.
-
-### Real `task` subagent check
-
-With the TUI (or `opencode2`) open in the demo repo, prompt:
-
-> Spawn exactly one subagent with the task tool. Ask it to run
-> `node -p "process.env.COORD_AGENT_ID"` through its bash tool and report the
-> output.
-
-The identity now arrives as the `export COORD_AGENT_ID='...'` prefix on `bash`
-tool calls, so the subagent's reported identity should be
-`Harness Agent@<host>/<childID>`. Inspect the hub without leaving the repo:
-
-```sh
-bun run scripts/dev-harness.ts --inspect --expect-subagent
-```
-
-Expected: the root identity is `Harness Agent@<host>/<rootID>`; the child shows
-`parent=<root id>`, `kind=subagent`, and identity
-`Harness Agent@<host>/<childID>`; claims list `⇄ <session>` when the session
-identity matches a claim's agent. `--expect-subagent` prints `PASS` and exits
-non-zero when no such subagent was folded, so the live `task` check is
-scriptable. (The old quota-spending `--probe-task` mode was removed with the v1
-HTTP endpoints.)
+Contributor setup, the dev harness and its probe modes, two-device acceptance,
+publishing, and manual verification live in
+[`CONTRIBUTING.md`](CONTRIBUTING.md).

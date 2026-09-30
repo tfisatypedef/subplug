@@ -4,7 +4,7 @@ import { hostname } from "node:os"
 import { Plugin } from "@opencode/plugin"
 import { categorizeCommand, summarizeCommand, summarizeError } from "../shared/redact.ts"
 import type { CommsPointer, EventRecord, SessionNode } from "../shared/types.ts"
-import { EventLog, EventTail, readEventRecords } from "../hub/append.ts"
+import { EventLog, EventTail, readEventRecords, readSessionRecords } from "../hub/append.ts"
 import { applyRecord } from "../hub/fold.ts"
 import { agentIdentity } from "../hub/identity.ts"
 import { readMonitorState } from "../hub/monitor.ts"
@@ -98,7 +98,6 @@ export type ServerContext = {
 }
 
 export type SubplugOptions = {
-  injectIdentity: boolean
   injectComms: boolean
   storageDir?: string
   hubGroup?: string
@@ -142,10 +141,8 @@ export function resolveOptions(options?: unknown): SubplugOptions {
   const coord = asRecord(root.coord)
   const comms = asRecord(root.comms)
   const web = asRecord(root.web)
-  const envInject = toBool(process.env.SUBPLUG_INJECT_IDENTITY, false)
   const envStorage = toStringValue(process.env.SUBPLUG_STORAGE_DIR)
   return {
-    injectIdentity: toBool(coord.injectIdentity, toBool(root.injectIdentity, envInject)),
     injectComms: toBool(comms.inject, toBool(root.injectComms, true)),
     storageDir: toStringValue(coord.storageDir) ?? toStringValue(root.storageDir) ?? envStorage,
     hubGroup:
@@ -287,15 +284,20 @@ export async function setupServer(ctx: ServerContext): Promise<() => void> {
   const comms = new Map<string, CommsPointer>()
   const commsTail = new EventTail()
   commsTail.seed(dir)
+  // Age applies to a session's activity, not each field's provenance: an active
+  // child still needs yesterday's parent/title/identity after log rotation.
+  for (const record of readSessionRecords(dir)) applyRecord(sessions, record)
+  for (const [id, session] of sessions) {
+    if (now() - session.lastEventAt > cfg.maxAgeMs) sessions.delete(id)
+  }
   for (const record of readEventRecords(dir, { maxAgeMs: cfg.maxAgeMs })) {
-    applyRecord(sessions, record)
     applyCommsRecord(comms, record)
   }
 
   const repoRootCache = new Map<string, string | undefined>()
   const identityBaseCache = new Map<string, string>()
   const identityChecked = new Set<string>()
-  const sendTimes = new Map<string, number[]>()
+  const sendTimes = new Map<string, Array<{ ts: number }>>()
   let snapshotTimer: ReturnType<typeof setTimeout> | undefined
 
   const repoRootFor = (start: string): string | undefined => {
@@ -685,10 +687,13 @@ export async function setupServer(ctx: ServerContext): Promise<() => void> {
           return { content: "refusing to send a message to the calling session" }
         }
         const capKey = sender ?? "unknown"
-        const recent = (sendTimes.get(capKey) ?? []).filter((ts) => now() - ts < SEND_CAP_WINDOW_MS)
+        const recent = (sendTimes.get(capKey) ?? []).filter((entry) => now() - entry.ts < SEND_CAP_WINDOW_MS)
         if (recent.length >= SEND_CAP) {
           return { content: `send cap reached (${SEND_CAP}/minute); wait before sending again` }
         }
+        const reservation = { ts: now() }
+        recent.push(reservation)
+        sendTimes.set(capKey, recent)
         let sent: Awaited<ReturnType<typeof sendFollowUp>>
         try {
           sent = await sendFollowUp({
@@ -702,6 +707,8 @@ export async function setupServer(ctx: ServerContext): Promise<() => void> {
             record: append,
           })
         } catch (error) {
+          // Remove only this send's reservation; parallel successes retain theirs.
+          sendTimes.set(capKey, (sendTimes.get(capKey) ?? []).filter((entry) => entry !== reservation))
           if (error instanceof FollowUpConfirmationRequired) {
             return {
               content: `session ${target.sessionID.slice(0, 12)} is ${error.status}; pass confirm:true to queue follow-up context for its next step`,
@@ -710,8 +717,6 @@ export async function setupServer(ctx: ServerContext): Promise<() => void> {
           }
           return { content: `send failed: ${followUpError(error)}` }
         }
-        recent.push(now())
-        sendTimes.set(capKey, recent)
         return {
           content: `sent ${sent.msgID} to ${target.sessionID.slice(0, 12)} (${sent.status}, ${sent.noReply ? "queued" : "prompted"})`,
           metadata: { target: target.sessionID, msgID: sent.msgID, noReply: sent.noReply },

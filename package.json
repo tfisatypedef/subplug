@@ -1,6 +1,6 @@
 {
   "name": "subplug",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "Monitor other opencode sessions and subagents, overlaid with the coordination/ claim registry, with queue-only addressed comms.",
   "license": "MIT",
@@ -15,6 +15,11 @@
     "monitoring",
     "coordination"
   ],
+  "homepage": "https://github.com/tfisatypedef/subplug#readme",
+  "bugs": {
+    "url": "https://github.com/tfisatypedef/subplug/issues"
+  },
+  "author": "tfisatypedef (https://github.com/tfisatypedef)",
   "engines": {
     "opencode": ">=2",
     "bun": ">=1.3"
@@ -38,6 +43,7 @@
     "tui.tsx",
     "src",
     "README.md",
+    "CONTRIBUTING.md",
     "LICENSE"
   ],
   "scripts": {

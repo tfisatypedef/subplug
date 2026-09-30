@@ -8,6 +8,7 @@ export type DashboardActions = {
   open: () => void
   filter: (delta: number) => void
   group: () => void
+  breakAway: () => void
   search: () => void
   help: () => void
   compose: () => void
@@ -47,6 +48,13 @@ export const DASHBOARD_LAYER = (actions: DashboardActions): TuiKeymapLayer => ({
       run: () => actions.filter(-1),
     },
     { id: "subplug.group", title: "Subplug: cycle grouping", group: "Plugin", bind: "g", run: () => actions.group() },
+    {
+      id: "subplug.breakAway",
+      title: "Subplug: break subagents out of their parents",
+      group: "Plugin",
+      bind: "b",
+      run: () => actions.breakAway(),
+    },
     { id: "subplug.search", title: "Subplug: search sessions", group: "Plugin", bind: "/", run: () => actions.search() },
     { id: "subplug.help", title: "Subplug: toggle help", group: "Plugin", bind: "?", run: () => actions.help() },
     { id: "subplug.compose", title: "Subplug: send follow-up context", group: "Plugin", bind: "f", run: () => actions.compose() },
