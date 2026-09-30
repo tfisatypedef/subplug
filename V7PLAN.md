@@ -12,6 +12,11 @@ Windows (2026-09-29): `bun run typecheck`, `bun test` (188 pass / 0 fail),
 `bun run canary`, and harness `spike` / `--tui` /
 `--probe-tui-state [--attach] [--probe-execute] [--probe-task]
 [--probe-tools] [--probe-replay]` / `--demo` / `--inspect`.
+Re-verified green on Linux (WSL2/Ubuntu, 2026-09-30, Bun 1.3.3, opencode
+2.0.20): the same gates plus the local `npm pack` whitelist and the full
+harness matrix. Cold-start probe timing races in the late-subscriber live
+delivery and attach message-store hydration were hardened. The V7.R2 runbook is
+in README's "LAN acceptance (two devices)".
 
 ## Goal
 

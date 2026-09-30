@@ -364,6 +364,44 @@ activation, creates a session through `/api/session`, and checks the hub
 pointer, `server.start`/`session.created`/`session.identity` records, and the
 active plugin inventory.
 
+### LAN acceptance (two devices)
+
+`V7PLAN.md`'s V7.R2 checklist needs two machines: a server with a configured
+model, and a client that attaches. With a WSL2 client, run the server on the
+second device so the client connects outbound (WSL2's NAT does not accept
+inbound LAN connections without host port forwarding).
+
+On the server device, install subplug and start the server:
+
+```sh
+OPENCODE_PASSWORD=<password> opencode2 serve --hostname 0.0.0.0 --port 4096
+```
+
+On the client, run the probe against that server twice (execution, then a real
+task child):
+
+```sh
+SUBPLUG_PROBE_SERVER_URL=http://<server-ip>:4096 \
+OPENCODE_PASSWORD=<password> \
+SUBPLUG_PROBE_MODEL=<provider/model> \
+  bun run scripts/dev-harness.ts --probe-tui-state --existing-server --probe-execute
+
+SUBPLUG_PROBE_SERVER_URL=http://<server-ip>:4096 \
+OPENCODE_PASSWORD=<password> \
+SUBPLUG_PROBE_MODEL=<provider/model> \
+  bun run scripts/dev-harness.ts --probe-tui-state --existing-server --probe-task
+```
+
+Each run prints its redacted JSON result path; keep it plus a manual record of
+device OSes, versions, polling interval, outcomes, and limitations. In the
+report, `remote` must be `true`, the store must hydrate, and the bounded
+`events[].at` vs `statuses[].at` timestamps (one client clock) show the busy
+and idle transitions. `--existing-server` writes only to a fresh client scratch
+directory and never touches the server workspace or a local hub. The probe
+covers the state and latency items; the V7.R2 UI items (dashboard/sidebar
+"claims unavailable", transcript navigation, follow-up confirm/queue, toasts,
+disconnect/reconnect) still need the visual pass.
+
 ### Publishing
 
 `prepublishOnly` runs `typecheck` + `test`, so a broken tree cannot ship.
@@ -374,7 +412,8 @@ tarball in the `pack` job and runs `canary --load` against `@opencode/cli@dev`
 in the `canary` job.
 
 Validated release: `0.3.0` against `@opencode/cli` 2.0.20 / `@opencode/plugin`
-2.0.19 (Windows, 2026-09-29). To smoke-test a packed artifact locally, extract
+2.0.19 (Windows 2026-09-29; Linux WSL2/Ubuntu, Bun 1.3.3, 2026-09-30). To
+smoke-test a packed artifact locally, extract
 the tarball, `bun install` its declared deps, and point the harness at it with
 `SUBPLUG_HARNESS_PLUGIN=<extracted-package-dir>` for the spike and `--tui`.
 

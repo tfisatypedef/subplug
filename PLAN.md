@@ -1147,6 +1147,15 @@ runs pass, but the two-device LAN pass is still pending. R0/R1 review fixes and
 probe work are committed on `v7-remote`; the suite passes 188 tests and
 `bun run typecheck` is clean.
 
+Linux baseline (WSL2/Ubuntu, 2026-09-30, Bun 1.3.3, opencode 2.0.20,
+`@opencode/plugin` 2.0.19): `bun install --frozen-lockfile`,
+`bun run typecheck`, `bun test` (188 pass), `canary --load`, the local `npm
+pack` whitelist, and the harness matrix (spike, `--tui`, `--probe-tui-state`,
+`--probe-tui-state --attach`, `--probe-replay`, `--demo --keep`, `--inspect`)
+all pass. Two cold-start probe timing races (late-subscriber live delivery and
+attach message-store hydration) were hardened by `8e875bf`; no shipped code
+changed.
+
 ### R1 — live v2 event and subagent contract
 
 Resolve open questions 3 and 5 using the execution-capable V7 probe and one
@@ -1291,9 +1300,10 @@ README; no pipeline added; the web guard is unchanged and still covered by
 - [x] Run typecheck, the full suite, `canary --load`, and the harness server
   spike against the intended release host. Verify Windows and Linux CI.
   Windows (2026-09-29, `2.0.20`): typecheck clean, 188 pass, `canary --load`
-  OK (TUI loaded, version 0.3.0), harness spike OK. Linux runs the existing
-  `ci.yml` `test`/`canary`/`pack` jobs on push and PR; it cannot be executed on
-  the Windows dev host and is left to CI.
+  OK (TUI loaded, version 0.3.0), harness spike OK. Linux (WSL2/Ubuntu,
+  2026-09-30, `2.0.20`, Bun 1.3.3): the same gates plus the local `npm pack`
+  whitelist and the full harness matrix pass, so the `ci.yml`
+  `test`/`canary`/`pack` jobs were reproduced locally instead of left to CI.
 - [x] Pack the package and install that tarball in isolated server/TUI config;
   confirm both entrypoints, optional peers, and the documented options work.
   Inspect tarball contents using the existing CI whitelist. `bun pm pack` →
