@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { hubPointerFile, readHubPointer, writeHubPointer } from "../src/hub/paths.ts"
+import { hubPointerFile, hubRoot, readHubPointer, selectHubDir, writeHubPointer } from "../src/hub/paths.ts"
 
 const original = process.env.XDG_STATE_HOME
 
@@ -44,5 +44,35 @@ describe("hub pointer", () => {
     } finally {
       rmSync(xdg, { recursive: true, force: true })
     }
+  })
+})
+
+describe("hub selection", () => {
+  test("uses a pointer that names this reader's group", () => {
+    expect(
+      selectHubDir({ stateDir: "/state", group: "project-a", pointer: { hubDir: "/hubs/a", group: "project-a", at: 1 } }),
+    ).toBe("/hubs/a")
+  })
+
+  test("ignores a pointer written by another project", () => {
+    expect(
+      selectHubDir({ stateDir: "/state", group: "project-a", pointer: { hubDir: "/hubs/b", group: "project-b", at: 1 } }),
+    ).toBe(hubRoot("/state", "project-a"))
+  })
+
+  test("distrusts a pointer with no group when the reader knows its group", () => {
+    expect(
+      selectHubDir({ stateDir: "/state", group: "project-a", pointer: { hubDir: "/hubs/legacy", at: 1 } }),
+    ).toBe(hubRoot("/state", "project-a"))
+  })
+
+  test("falls back to the pointer when the reader cannot resolve a group", () => {
+    expect(
+      selectHubDir({ stateDir: "/state", pointer: { hubDir: "/hubs/a", group: "project-a", at: 1 } }),
+    ).toBe("/hubs/a")
+  })
+
+  test("derives an unknown hub without a pointer", () => {
+    expect(selectHubDir({ stateDir: "/state" })).toBe(hubRoot("/state", "unknown"))
   })
 })

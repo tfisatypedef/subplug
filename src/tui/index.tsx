@@ -14,7 +14,7 @@ import { EventLog, readEventRecords } from "../hub/append.ts"
 import { FollowUpConfirmationRequired, followUpError, sendFollowUp } from "../shared/follow-up.ts"
 import { rollupSubtree } from "../hub/tree.ts"
 import type { TranscriptRow } from "../shared/transcript.ts"
-import { fallbackStateDir, hubRoot, readHubPointer } from "../hub/paths.ts"
+import { fallbackStateDir, selectHubDir, readHubPointer } from "../hub/paths.ts"
 import { findRepoRoot } from "../coord/repo.ts"
 import { backfillSessions, listNativeSessions, loadSessionDetailV2, type SessionDetailV2 } from "./data.ts"
 import { detectRemote, localInterfaceHosts } from "./remote.ts"
@@ -156,9 +156,9 @@ function createMonitor(ctx: TuiContextLike, cfg: SubplugTuiOptions) {
     })
     if (remote) return
     const explicitDir = cfg.storageDir ?? process.env.SUBPLUG_STORAGE_DIR
+    const group = cfg.hubGroup ?? projectIDFor(ctx)
     const pointer = explicitDir ? undefined : readHubPointer()
-    hubDir =
-      pointer?.hubDir ?? hubRoot(explicitDir ?? fallbackStateDir(), cfg.hubGroup ?? projectIDFor(ctx) ?? "unknown")
+    hubDir = selectHubDir({ stateDir: explicitDir ?? fallbackStateDir(), group, pointer })
     repoRoot = findRepoRoot(ctx.location?.directory ?? process.cwd())
   }
 
