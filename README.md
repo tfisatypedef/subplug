@@ -298,19 +298,29 @@ On the client machine:
 OPENCODE_PASSWORD=<password> opencode --server http://<server-ip>:4096
 ```
 
-`<server-ip>` is the server machine's LAN address (`hostname -I` or
-`ip -4 addr` on Linux, `ipconfig getifaddr en0` on macOS, `ipconfig` on
-Windows), inbound TCP 4096 must be allowed by its firewall, and both machines
-must be on the same network. Loopback (`127.0.0.1`) only reaches a server on
-the same machine, so a cross-device run must use the LAN address.
+`<server-ip>` is the server's LAN address (`ip -4 addr` on Linux, where
+`hostname -I` is not portable; `ipconfig getifaddr en0` on macOS; `ipconfig` on
+Windows) or, off-LAN, an encrypted overlay address. Loopback (`127.0.0.1`) only
+reaches a server on the same machine, so a cross-device run must use a LAN or
+overlay address, and the server's firewall must allow inbound TCP 4096. An
+overlay normally handles that itself; `sudo ufw allow in on tailscale0 to any
+port 4096 proto tcp` is the fix if it does not.
 
 Off-LAN clients work over an encrypted overlay such as Tailscale: use the
-server's `100.x.y.z` address or MagicDNS name in place of `<server-ip>`. With a
-WSL2 client, either enable mirrored networking (`[wsl2]` `networkingMode=
-mirrored` in `%UserProfile%\.wslconfig`, then `wsl --shutdown`) so WSL shares
-the host's overlay interface, or install Tailscale inside WSL; both keep the
-existing checkout runnable. A client on the same LAN needs no overlay — WSL
-connects outbound to the server's LAN address as-is.
+server's `100.x.y.z` address (`tailscale ip -4`) or MagicDNS name in place of
+`<server-ip>`. The overlay is already encrypted, so the plain-HTTP Basic
+credentials are not exposed in transit. With a WSL2 client, either enable
+mirrored networking (`[wsl2]` `networkingMode=mirrored` in
+`%UserProfile%\.wslconfig`, then `wsl --shutdown`) so WSL shares the host's
+overlay interface, or install Tailscale inside WSL. A native client on the same
+LAN needs no overlay — it connects outbound to the server's LAN address as-is.
+
+Prefer the overlay address directly. If you front the server with
+`tailscale serve`, bind it to `0.0.0.0` rather than `127.0.0.1`: a loopback
+bind advertises `http://127.0.0.1:<port>` in `/api/info`, which every client
+matches against its own loopback and classifies as local, so auto-detection
+skips the hub-free remote path. If you must bind loopback, force the mode with
+the `remote` option.
 
 subplug detects the attach automatically (the advertised `urls` don't match any
 local interface, with the session directory as a fallback) and renders from the
@@ -365,7 +375,7 @@ writes inside the repo would retrigger plugin reloads.
   and retains the result path it prints. It creates two named sessions and
   admits one scratch prompt on that server; execution mode also runs the
   selected model. It never seeds server workspace files or stops the server.
-  Run that mode on a second device for the V7 LAN acceptance checklist in
+  Run that mode on a second device for the V7 two-device acceptance checklist in
   `V7PLAN.md`; the same-machine `--attach` run is an earlier gate.
 
   `--probe-task` additionally prompts the root to create one real `task`
@@ -380,12 +390,14 @@ activation, creates a session through `/api/session`, and checks the hub
 pointer, `server.start`/`session.created`/`session.identity` records, and the
 active plugin inventory.
 
-### LAN acceptance (two devices)
+### Two-device acceptance (LAN or Tailscale)
 
 `V7PLAN.md`'s V7.R2 checklist needs two machines: a server with a configured
-model, and a client that attaches. With a WSL2 client, run the server on the
-second device so the client connects outbound (WSL2's NAT does not accept
-inbound LAN connections without host port forwarding).
+model, and a client that attaches. The server can be reached over the LAN or an
+encrypted overlay — `<server-ip>` below is either (see Remote attach above).
+With a WSL2 client, run the server on the second device so the client connects
+outbound (WSL2's NAT does not accept inbound LAN connections without host port
+forwarding).
 
 #### Server device setup
 
@@ -420,8 +432,14 @@ otherwise re-pull both. To verify the exact npm artifact instead of a checkout,
 `npm pack`, extract `subplug-0.3.0.tgz`, `npm install` inside it, and point
 `package` at that directory.
 
+`bun install` is required before the plugin can load: the entries import
+`@opencode/plugin` (and the TUI entry `@opencode/plugin/tui`) at runtime, not
+just for types, so the package must be resolvable from the checkout.
+
 Configure a model/provider on the server (e.g. `opencode auth login`), then
-start it and allow TCP 4096 through the host firewall:
+start it. Bind the interface the client will reach and allow inbound TCP 4096
+through the host firewall. Over Tailscale, replace `--hostname 0.0.0.0` with
+`--hostname "$(tailscale ip -4)"` to keep the port off the LAN:
 
 ```sh
 OPENCODE_PASSWORD=<password> OPENCODE_CONFIG_DIR=~/subplug-server \
@@ -429,11 +447,38 @@ OPENCODE_PASSWORD=<password> OPENCODE_CONFIG_DIR=~/subplug-server \
 ```
 
 Confirm the endpoint from the client before probing (`<server-ip>` is the
-server's LAN address; see Remote attach above — loopback only works on the same
-machine):
+server's LAN or overlay address; see Remote attach above — loopback only works
+on the same machine):
 
 ```sh
 curl -u "opencode:<password>" http://<server-ip>:4096/api/info
+```
+
+#### Client device setup
+
+subplug's TUI entry runs on the client and cannot be fetched across the
+network, so the client needs its own copy at the same commit:
+
+```sh
+npm install -g @opencode/cli          # or set OPENCODE_BIN for the probe
+git clone -b v7-remote https://github.com/tfisatypedef/subplug.git ~/subplug
+git -C ~/subplug checkout <commit>    # match `git -C ~/subplug rev-parse HEAD` on the server
+(cd ~/subplug && bun install)         # runtime deps: @opencode/plugin, @opentui/*, solid-js
+```
+
+The probe resolves the host from `OPENCODE_BIN`, then `opencode2`, then
+`opencode`. For the visible pass, load the TUI entry from the client's
+`cli.json` and launch against the server:
+
+```sh
+cat > <client-config-dir>/cli.json <<'JSON'
+{
+  "$schema": "https://opencode.ai/v2/cli.json",
+  "plugins": [{ "package": "/home/<user>/subplug", "options": {} }]
+}
+JSON
+OPENCODE_CONFIG_DIR=<client-config-dir> OPENCODE_PASSWORD=<password> \
+  opencode --server http://<server-ip>:4096
 ```
 
 On the client, run the probe against that server twice (execution, then a real

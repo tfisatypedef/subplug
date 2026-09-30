@@ -2,8 +2,8 @@
 
 Status: **V7.1–V7.5 implemented (V7.0 probe done); V7.R0 review fixes and V7.R1
 probe landed; single-machine execution and task-child acceptance pass on
-`opencode` 2.0.20; two-device LAN acceptance remains pending.** Open decisions
-answered (see "Resolved decisions"); scope locked
+`opencode` 2.0.20; two-device (LAN or overlay) acceptance remains pending.**
+Open decisions answered (see "Resolved decisions"); scope locked
 to read-only + comms with a hub-free remote. Supersedes the earlier standalone
 `subplug-v2` draft, which wrongly proposed a new plugin. subplug is **already a
 v2 plugin**; V7 is a delta on its `v2` branch, checked out in
@@ -16,13 +16,13 @@ Re-verified green on Linux (WSL2/Ubuntu, 2026-09-30, Bun 1.3.3, opencode
 2.0.20): the same gates plus the local `npm pack` whitelist and the full
 harness matrix. Cold-start probe timing races in the late-subscriber live
 delivery and attach message-store hydration were hardened. The V7.R2 runbook is
-in README's "LAN acceptance (two devices)".
+in README's "Two-device acceptance (LAN or Tailscale)".
 
 ## Goal
 
-Work with opencode sessions running on other devices on the local network as if
-working on the machine the server is running on. Scope is **plugin-only** (no
-core changes).
+Work with opencode sessions running on other devices on the local network or an
+encrypted overlay (e.g. Tailscale) as if working on the machine the server is
+running on. Scope is **plugin-only** (no core changes).
 
 ## Key facts that shape V7
 
@@ -115,24 +115,29 @@ Notes:
   (`~/opencode/packages/cli/src/services/server-connection.ts:25-29`).
 - In attach-first mode the plugin manages nothing: it inherits the endpoint and
   auth header through `ctx.client`/`ctx.data`. One static password on the host is
-  enough on a trusted LAN — plain-HTTP Basic auth is sniffable, so LAN only.
+  enough on a trusted LAN or an encrypted overlay (Tailscale): plain-HTTP Basic
+  auth is sniffable, so it is only safe on a trusted network or an encrypted
+  transport, never a shared one.
 - Credentials in plugin options are only needed for a future second-server panel
   (deferred). No SSH keys (start is manual).
 
 ## Proposed V7 phases (plugin scope)
 
 - **V7.0 — probe. DONE (2026-09-29, single-machine two-process harness).**
-  Findings recorded below. The two-device LAN pass still needs a machine with a
+  Findings recorded below. The two-device pass still needs a machine with a
   configured model/provider for event-latency items; everything else is measured.
   Run it with `OPENCODE_BIN=%APPDATA%\npm\opencode2.cmd bun run
   scripts/dev-harness.ts --probe-tui-state [--attach] [--keep]`; bind/connect
   hosts via `SUBPLUG_HARNESS_HOST` / `SUBPLUG_HARNESS_CONNECT`.
 - **V7.1 — remote detection + scoping. DONE (2026-09-29).** Detect via `ctx.client.server.info()`
   (`GET /api/info` → `{ version, pid, urls, paths.tmp }`): when bound `0.0.0.0`
-  the `urls` are the server machine's LAN interfaces, so "no `urls` entry matches
-  my loopback/local interfaces" ⇒ remote. Do not use `pid` as identity (changes
-  per restart); `ctx.location.directory` is the remote path string, not a local
-  path. Scope hub records so remote sessions never merge with local ones —
+  the `urls` are the server machine's interfaces (LAN and overlay), so "no `urls`
+  entry matches my loopback/local interfaces" ⇒ remote. Limitation: a server
+  bound to `127.0.0.1` and fronted by a proxy (e.g. `tailscale serve`) advertises
+  loopback, which every client matches locally, so auto-detection returns local;
+  bind `0.0.0.0` behind the proxy or force `remote: "remote"`. Do not use `pid`
+  as identity (changes per restart); `ctx.location.directory` is the remote path
+  string, not a local path. Scope hub records so remote sessions never merge with local ones —
   preferred: a `remote` mode in `SubplugTuiOptions` (`src/tui/context.ts`,
   alongside `storageDir`/`hubGroup`) that bypasses the hub.
 - **V7.2 — hub-independent TUI state. DONE (2026-09-29).** Build the dashboard from
@@ -254,11 +259,11 @@ overrides the heuristic.
 ## Remaining work specification (2026-09-29)
 
 This section is the current V7 completion checklist. V7.1–V7.5 feature code
-is implemented; the LAN acceptance has not been performed. The older probe
-results establish hydration and prompt admission, not model execution or
+is implemented; the two-device acceptance has not been performed. The older
+probe results establish hydration and prompt admission, not model execution or
 event latency. V7.R0 and V7.R1 are committed on `v7-remote`; the suite passes
 188 tests with `bun run typecheck` clean. Single-machine execution and
-task-child acceptance pass on `2.0.20` (see V7.R1 below); the two-device LAN
+task-child acceptance pass on `2.0.20` (see V7.R1 below); the two-device
 run remains pending.
 
 ### V7.R0 — review fixes and regression coverage
@@ -305,7 +310,7 @@ through an attached TUI; the result distinguishes admission from execution,
 shows busy then idle, and confirms an assistant transcript. The probe must
 remain optional; normal tests and CI need no model credentials.
 
-Probe code and R0 tests are implemented locally. Two-device LAN acceptance
+Probe code and R0 tests are implemented locally. Two-device acceptance
 remains pending; it is not established by typecheck or the provider-free
 hydration mode.
 
@@ -328,12 +333,15 @@ events carry no tool name. `--probe-execute` without a model returned
 a nonzero exit, as intended. These checks contain no LAN status-latency
 evidence (item (b) stays deferred) and no failure/interruption/retry path.
 
-### V7.R2 — two-device LAN acceptance
+### V7.R2 — two-device acceptance (LAN or Tailscale)
 
-Prerequisites: R1, two devices on the LAN, a server with a configured model,
-and subplug loaded in the server and client TUI. Start the server manually
-using README's Remote attach instructions. Run the client probe against that
-server, then perform the visible UI checks on the same session.
+Prerequisites: R1, two devices reachable over the LAN or an encrypted overlay
+(e.g. Tailscale), a server with a configured model, and subplug loaded — with
+its runtime dependencies installed — in the server and the client TUI. Start
+the server manually using README's Remote attach instructions; prefer a direct
+tailnet address, and if you front it with `tailscale serve`, bind `0.0.0.0` (see
+V7.1's detection limitation). Run the client probe against that server, then
+perform the visible UI checks on the same session.
 
 - [ ] Auto-detection selects remote; dashboard/sidebar indicate remote attach.
   Claims/conflicts/history/inbox remain explicitly unavailable, and client
@@ -353,7 +361,8 @@ server, then perform the visible UI checks on the same session.
 - [ ] Disconnect/reconnect the client: no cross-contamination with a local hub,
   no crash, and remote sessions/transcripts recover on reattach.
 
-Runbook: README "LAN acceptance (two devices)". It was rehearsed single-machine
+Runbook: README "Two-device acceptance (LAN or Tailscale)". It was rehearsed
+single-machine
 (2026-09-30) against a server bound to the client's non-loopback interface: the
 server-side plugin inventory check (`serverPluginLoaded`) and the client plugin
 check both pass in hydrate mode, and the endpoint/firewall steps work. The
