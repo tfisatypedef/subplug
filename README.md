@@ -14,6 +14,14 @@ host's copies are used and no duplicate Solid instance is installed.
 Requirements: [Bun](https://bun.sh) `>= 1.3` (for local dev) and opencode v2
 (the `opencode2` binary from `@opencode/cli`).
 
+Runtime boundary (Node): there is no Node-hosted opencode v2 distribution to
+target. `@opencode/cli@2.0.20` ships per-platform compiled binaries
+(`bin/opencode.exe`, with `@opencode/cli-<platform>` optional dependencies) and
+the host loads plugins with its embedded Bun runtime, so subplug ships
+TypeScript source and needs no build step. The optional web view keeps a clear
+"unavailable" message when `Bun.serve` is absent, so a non-Bun host degrades
+instead of failing.
+
 ## Install
 
 opencode discovers both entrypoints from `package.json` `exports["./server"]`

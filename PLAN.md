@@ -571,19 +571,25 @@ Recipe for V5: `npm i @opencode/cli@dev`, serve with the env above, Basic auth
 
 ### Open questions (remaining)
 
-1. Whether durable events replay to a plugin that subscribes after they were
-   published (affects any baseline recovery); V0–V6 only saw live events, so
-   the hub log plus TUI backfill remains the recovery path.
-2. Node-hosted CLI plugin loading (precompiled) versus shipping TS source.
+1. ~~Whether durable events replay to a plugin that subscribes after they were
+   published.~~ **Resolved (R2, `2.0.20`): no replay.** A late subscriber
+   received no pre-existing session events while a live event in the same
+   window arrived; recovery is the hub log plus TUI backfill.
+2. ~~Node-hosted CLI plugin loading (precompiled) versus shipping TS source.~~
+   **Resolved (R4, `2.0.20`): no Node host exists.** The CLI ships a compiled
+   per-platform binary that runs plugins under embedded Bun, so TS source
+   exports are retained (Bun-only boundary documented in README).
 3. Direct (non-Code-Mode) `session.tool.called` shape and the `task` subagent
-   input; `session.created.parentID` is sufficient per schema, but no live
-   subagent run exercised it after the v2 port (the old `--probe-task` used v1
-   endpoints).
+   input. **Partially resolved (R1):** `--probe-task` confirmed a real task
+   child emits `session.created` with `parentID` and `agent`, and the child
+   folds as a `subagent` with a distinct identity. The direct-vs-Code-Mode tool
+   event shape is still unverified.
 4. Sidebar slot ordering/placement after built-ins: the plugin uses `append`
    to `sidebar.content`; `before`/`after`/`prepend` were not compared visually.
-5. Which release emits `session.status`/`session.execution.succeeded`; the dev
-   build did not, so status folding keyed off `session.execution.*` and step
-   events with the host events as a bonus if present.
+5. ~~Which release emits `session.status`/`session.execution.succeeded`.~~
+   **Resolved (R1, `2.0.20`):** `session.execution.started/succeeded` fire and
+   `session.status`/`session.idle` do not, so status folding correctly keys off
+   `session.execution.*` with the host events as a bonus if present.
 
 ## Locked decisions
 
@@ -1230,17 +1236,30 @@ The remote variants are covered by V7.R2 rather than a duplicate run.
 Open question 2 is a compatibility investigation, not an automatic build-system
 change. The package currently ships TypeScript source for the verified host.
 
-- [ ] Identify a supported Node-hosted v2 distribution before adding it to the
+- [x] Identify a supported Node-hosted v2 distribution before adding it to the
   compatibility matrix. Install the packed artifact into that host and check
-  server/TUI entrypoints, cleanup, and optional renderer peers.
-- [ ] If that supported host cannot load the source, specify a compiled export
+  server/TUI entrypoints, cleanup, and optional renderer peers. None exists:
+  `@opencode/cli@2.0.20` declares `bin.opencode`/`bin.opencode2` as
+  `./bin/opencode.exe` (a ~206 MB compiled binary) with per-platform
+  `@opencode/cli-<os>-<arch>` optional dependencies; `postinstall.mjs` only
+  selects the platform binary. The host runs plugins under its embedded Bun
+  runtime, so there is no Node host to install into.
+- [x] If that supported host cannot load the source, specify a compiled export
   strategy and test the packed artifact against both distributions. Otherwise
-  retain source exports and document the verified runtime.
+  retain source exports and document the verified runtime. Retained: source
+  exports, no compilation pipeline. `bun pm pack --dry-run` packs 35 files
+  including `server.ts`, `tui.tsx`, and `src/**` (TS source, no build output);
+  README documents the Bun-only boundary. The web view's `typeof Bun ===
+  "undefined"` guard (`src/server/web.ts:82`) already returns its clear
+  unavailable message.
 
 Acceptance: either evidence for supported Node loading or a documented Bun-only
 support boundary. The optional web view must give its existing clear unavailable
 message where `Bun.serve` is absent. Do not add a compilation pipeline merely to
 close a speculative question.
+Met on opencode `2.0.20` (Windows, 2026-09-29): Bun-only boundary documented in
+README; no pipeline added; the web guard is unchanged and still covered by
+`test/web.test.ts`.
 
 ### R5 — documentation reconciliation and release
 
