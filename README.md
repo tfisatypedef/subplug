@@ -304,14 +304,23 @@ Windows), inbound TCP 4096 must be allowed by its firewall, and both machines
 must be on the same network. Loopback (`127.0.0.1`) only reaches a server on
 the same machine, so a cross-device run must use the LAN address.
 
+Off-LAN clients work over an encrypted overlay such as Tailscale: use the
+server's `100.x.y.z` address or MagicDNS name in place of `<server-ip>`. With a
+WSL2 client, either enable mirrored networking (`[wsl2]` `networkingMode=
+mirrored` in `%UserProfile%\.wslconfig`, then `wsl --shutdown`) so WSL shares
+the host's overlay interface, or install Tailscale inside WSL; both keep the
+existing checkout runnable. A client on the same LAN needs no overlay — WSL
+connects outbound to the server's LAN address as-is.
+
 subplug detects the attach automatically (the advertised `urls` don't match any
 local interface, with the session directory as a fallback) and renders from the
 attached server's live `data.session`/`client` state. A remote attach is
 **hub-free**: it never reads or writes the local hub, so claims, conflicts, risk
 toasts and command history degrade to "claims unavailable on remote" instead of
 showing wrong data. Force the mode with the `remote` TUI option
-(`auto`/`remote`/`local`) or `SUBPLUG_REMOTE`. LAN only — plain-HTTP Basic auth
-is sniffable — and one attached server at a time.
+(`auto`/`remote`/`local`) or `SUBPLUG_REMOTE`. Plain-HTTP Basic auth is
+sniffable on a shared network, so a remote attach is for a trusted LAN or an
+encrypted overlay; one attached server at a time.
 
 ## Development
 
