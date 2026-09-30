@@ -208,17 +208,21 @@ record the pointer only after the prompt is admitted.
   active-claim count. Clicking it opens the command center.
 - Dashboard route `subplug` — a codex-style **command center**: status filter
   tabs (`All / Needs you / Working / Ready / Inactive` with counts), grouping by
-  Project / Status / Agent / Hierarchy (default Project; Hierarchy keeps the
-  nested parent/child tree), and rows with a selection caret, status dot, title,
-  status column, and age. A right-hand details pane (terminals ≥ 90 columns)
+  Project / Status / Agent / Hierarchy (default Project, which nests each
+  subagent under its parent and collapses with `←`/`→`; Hierarchy is the global
+  parent/child tree; `b` breaks subagents back out into a flat list), and rows
+  with a selection caret, status dot, title, status column, and age. A
+  right-hand details pane (terminals ≥ 90 columns)
   shows the selected session's id, directory, agent, model, identity, subtree
   rollup, joined claims (`⇄` plus session id, with conflicting claims and their
   reasons in red), pending inbox, last command, and a short transcript preview.
   The header summarizes active claims and conflicts; click tabs to filter or
   rows to select the highlighted session. Open with `/subplug` or
   `ctrl+alt+a`. `↑`/`↓` selects, `pgup`/`pgdn` page, `home`/`end` jump,
-  `tab`/`shift+tab` cycles the filter, `g` cycles grouping, `/` opens a search
-  prompt. `?`/`h` toggles help; `←`/`→`/space collapse/expand in Hierarchy.
+  `tab`/`shift+tab` cycles the filter, `g` cycles grouping, `b` breaks away,
+  `/` opens a search
+  prompt. `?`/`h` toggles help; `←`/`→`/space collapse/expand in a nested
+  project or Hierarchy.
   Enter opens the selected session: it switches opencode when the host knows the
   session (including the in-plugin detail route for sessions this server does
   not own); lookup failures show an error toast. `esc`/`q` first closes help or
@@ -538,8 +542,9 @@ conflict, and a stale risk. In the TUI:
 
 - the sidebar **Agents** slot lists both sessions and the active-claim count;
 - `/subplug` opens the command center: filter tabs with counts, `g` cycles
-  grouping (Project → Status → Agent → Hierarchy; Hierarchy nests the subagent
-  under its parent with collapse via `←`/`→`), a per-selection details pane with
+  grouping (Project → Status → Agent → Hierarchy), Project nests the subagent
+  under its parent with collapse via `←`/`→` and `b` breaks it back out into a
+  flat list, a per-selection details pane with
   subtree rollup, joined claims (`⇄ <session>`), and conflict coloring;
 - Enter opens the detail view for a session this instance does not own (as in
   the demo): breadcrumb, rolled-up subtree cost/counts, a pending **Inbox**
