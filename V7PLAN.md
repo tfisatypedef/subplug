@@ -353,6 +353,14 @@ server, then perform the visible UI checks on the same session.
 - [ ] Disconnect/reconnect the client: no cross-contamination with a local hub,
   no crash, and remote sessions/transcripts recover on reattach.
 
+Runbook: README "LAN acceptance (two devices)". It was rehearsed single-machine
+(2026-09-30) against a server bound to the client's non-loopback interface: the
+server-side plugin inventory check (`serverPluginLoaded`) and the client plugin
+check both pass in hydrate mode, and the endpoint/firewall steps work. That
+rehearsal does **not** establish remote detection (`remote` stays `false` when
+the endpoint is a local interface), model execution, or the UI items; those
+still need the real second device and a configured model.
+
 Acceptance: preserve a redacted JSON report plus a short manual-check record
 with device OS, versions, polling interval, outcomes, and observed limitations.
 Mark V7 complete only when this run passes. If the second device or provider
