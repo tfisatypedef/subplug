@@ -129,7 +129,26 @@ started are still delivered on the next prompt; re-reads are idempotent
 The server plugin activates lazily on the first session at its location, so a
 session created at that exact moment can miss `session.created`. The TUI
 backfills native sessions it can enumerate into the hub, which closes the gap
-as soon as a TUI is open.
+as soon as a TUI is open. Backfill treats every session id already in the hub —
+including one recorded as `session.deleted` — as known, so it never writes a
+duplicate and never resurrects a deleted session.
+
+### Recovery contract
+
+The hub is the only durable state; the event stream is live-only. A plugin that
+subscribes after an event was published does not receive it (verified on
+opencode `2.0.20`, plugin `0.2.0`: a late subscriber got no pre-existing session
+events while a live event during the same window arrived), so history is never
+replayed. The TUI store is likewise cold at boot for sessions it did not sync.
+
+After a restart with an existing hub, the server plugin re-subscribes and
+re-registers its tools, and readers fold the retained JSONL + snapshot, so
+server-side tool visibility and folded state (parent links, status, cost)
+survive the restart. The v2 server context has no session-listing API, so
+sessions created while no subscriber was attached are recovered only through
+the TUI backfill described above. Live session state — status, cost, messages —
+is always read through `ctx.data`/`ctx.client`; the hub holds only appended
+metadata. A remote attach reads and writes no local hub at all.
 
 In coordination-enabled repos, a `git commit`/`git push`/`coord` command whose
 staged paths are not covered by the session's claims is recorded as a
@@ -294,6 +313,8 @@ SUBPLUG_PROBE_MODEL=provider/model bun run scripts/dev-harness.ts \
   --probe-tui-state --attach --probe-execute  # one bounded scratch prompt
 SUBPLUG_PROBE_MODEL=provider/model bun run scripts/dev-harness.ts \
   --probe-tui-state --attach --probe-task     # one task-created child, folded parent check
+SUBPLUG_HARNESS_DIR=$TMPDIR/subplug-replay bun run scripts/dev-harness.ts \
+  --probe-tui-state --probe-replay            # late-subscriber replay + restart durability
 SUBPLUG_PROBE_SERVER_URL=http://<server-ip>:4096 OPENCODE_PASSWORD=<password> \
   SUBPLUG_PROBE_MODEL=provider/model bun run scripts/dev-harness.ts \
   --probe-tui-state --existing-server --probe-execute

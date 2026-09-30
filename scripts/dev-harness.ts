@@ -37,6 +37,7 @@ const attachMode = process.argv.includes("--attach")
 const existingServerMode = process.argv.includes("--existing-server")
 const probeExecute = process.argv.includes("--probe-execute")
 const probeTask = process.argv.includes("--probe-task")
+const probeReplay = process.argv.includes("--probe-replay")
 const verbose = process.argv.includes("--verbose")
 
 const harnessIdentity = `Harness Agent@${hostname()}`
@@ -687,17 +688,141 @@ async function runExistingServerProbe(): Promise<void> {
   }
 }
 
-async function createSession(title: string): Promise<string> {
+async function createSession(title: string, parentID?: string): Promise<string> {
   const response = await api("/api/session", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ title }),
+    body: JSON.stringify({ title, ...(parentID ? { parentID } : {}) }),
   })
   if (!response.ok) throw new Error(`POST /api/session -> HTTP ${response.status}: ${await response.text()}`)
   const payload = (await response.json()) as { data?: { id?: string } }
   const id = payload.data?.id
   if (!id) throw new Error("POST /api/session returned no id")
   return id
+}
+
+async function listNativeSessionIDs(): Promise<Array<{ id: string; parentID?: string }>> {
+  const response = await api("/api/session?limit=200")
+  if (!response.ok) return []
+  const payload = (await response.json()) as { data?: unknown }
+  const rows = Array.isArray(payload.data) ? (payload.data as Array<Record<string, unknown>>) : []
+  return rows
+    .map((row) => ({
+      id: typeof row.id === "string" ? row.id : "",
+      parentID: typeof row.parentID === "string" ? row.parentID : undefined,
+    }))
+    .filter((row) => row.id)
+}
+
+/**
+ * Recovery matrix: (a) a late subscriber does not receive earlier events;
+ * (b) a live event during the probe window is delivered; (c) the hub records
+ * survive a server restart, and the server plugin re-registers its tools.
+ */
+async function runReplayProbe(): Promise<void> {
+  seedRepo()
+  writeConfig([{ package: probeStateEntry, options: {} }])
+  rmSync(stateDir, { recursive: true, force: true })
+  const probeDir = join(stateDir, "probe")
+
+  let server: ChildProcess | undefined
+  let serverOutput = () => ""
+  try {
+    const started = await startServerUntilReady()
+    server = started.child
+    serverOutput = started.output
+    await forcePluginActivation()
+
+    // Sessions published before the late subscriber attaches. A fresh
+    // SUBPLUG_HARNESS_DIR keeps earlier runs out of this directory.
+    const rootID = await createSession("replay root")
+    const childID = await createSession("replay child", rootID)
+    log(`published sessions before the late subscriber: root=${rootID} child=${childID}`)
+    // Give the server tap time to fold these into the hub.
+    await sleep(2500)
+
+    const published = await listNativeSessionIDs()
+    log(`server sessions: ${JSON.stringify(published)}`)
+    log(`published session.created events: ${published.map((row) => row.id).join(", ")}`)
+    const childRow = published.find((row) => row.id === childID)
+    log(`published child parent link: ${childRow?.parentID ?? "(none)"}`)
+
+    const { child, output } = spawnTui({
+      SUBPLUG_PROBE_DIR: probeDir,
+      SUBPLUG_PROBE_REPLAY: "1",
+      SUBPLUG_PROBE_PLUGIN_VERSION: JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version as string,
+    }, { serverURL: base })
+
+    // Live contrast: publish one session while the probe is subscribed. It must
+    // arrive even though the earlier events do not.
+    await sleep(4500)
+    const liveID = await createSession("replay live")
+    log(`published live session during the probe window: ${liveID}`)
+
+    const marker = join(probeDir, "tui-state-probe.json")
+    const done = await waitFor(() => existsSync(marker), 90_000, "replay probe marker")
+    stop(child)
+    await sleep(500)
+    if (!done) {
+      process.stderr.write(output().slice(-4000))
+      process.stderr.write(serverOutput().slice(-4000))
+      log("replay probe marker was not written")
+      process.exitCode = 1
+      return
+    }
+
+    const report = JSON.parse(readFileSync(marker, "utf8")) as {
+      outcome?: string
+      sessionCount?: number
+      storeSessions?: string[]
+      events?: Array<{ type?: string; sessionID?: string }>
+    }
+    const received = new Set((report.events ?? []).map((event) => event.sessionID).filter(Boolean) as string[])
+    const replayed = published.map((row) => row.id).filter((id) => received.has(id))
+    const storeHydrated = new Set(report.storeSessions ?? [])
+    log(`replay probe window: ${JSON.stringify({ outcome: report.outcome, sessionCount: report.sessionCount })}`)
+    log(`late subscriber store sessions: ${report.storeSessions?.join(", ") || "(none)"}`)
+    log(`late subscriber events by session: ${[...received].join(", ") || "(none)"}`)
+    log(
+      replayed.length
+        ? `REPLAY OBSERVED for pre-existing sessions: ${replayed.join(", ")}`
+        : "NO REPLAY: pre-existing session events were not delivered to the late subscriber",
+    )
+    log(received.has(liveID) ? "LIVE DELIVERY: an event published after subscribing arrived" : "LIVE MISS: the live event did not arrive")
+    log(
+      published.every((row) => storeHydrated.has(row.id))
+        ? "STORE HYDRATED: every pre-existing session is present in the TUI store"
+        : "STORE COLD: pre-existing sessions are absent from the TUI store until backfill runs",
+    )
+
+    // Restart durability: the hub records outlive the server process.
+    if (server) stop(server)
+    await sleep(1000)
+    const hubDir = hubRoots()[0]
+    const before = hubDir ? readEvents(hubDir) : []
+    const createdBefore = before.filter((event) => event.kind === "session.created").length
+    log(`hub before restart: ${before.length} records, ${createdBefore} session.created`)
+    server = undefined
+
+    const restarted = await startServerUntilReady()
+    server = restarted.child
+    serverOutput = restarted.output
+    const entry = await forcePluginActivation()
+    const features = entry?.features as { server?: boolean; tui?: boolean } | undefined
+    const after = hubDir ? readEvents(hubDir) : []
+    const createdAfter = after.filter((event) => event.kind === "session.created").length
+    log(`plugin after restart: ${JSON.stringify({ status: entry?.state, features })}`)
+    log(`hub after restart: ${after.length} records, ${createdAfter} session.created`)
+    log(
+      features?.server && createdAfter >= createdBefore
+        ? "RESTART DURABLE: hub records retained and server tools re-registered"
+        : "RESTART GAP: hub records or server tools did not survive",
+    )
+    if (report.outcome !== "pass") process.exitCode = 1
+    else log("replay/recovery probe OK")
+  } finally {
+    if (server) stop(server)
+  }
 }
 
 async function runSpike(): Promise<void> {
@@ -815,8 +940,8 @@ async function runSpike(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  if ((existingServerMode || probeExecute || probeTask) && !probeTuiState) {
-    throw new Error("--existing-server, --probe-execute and --probe-task require --probe-tui-state")
+  if ((existingServerMode || probeExecute || probeTask || probeReplay) && !probeTuiState) {
+    throw new Error("--existing-server, --probe-execute, --probe-task and --probe-replay require --probe-tui-state")
   }
   if (existingServerMode && attachMode) {
     throw new Error("choose either --existing-server or --attach")
@@ -838,7 +963,8 @@ async function main(): Promise<void> {
     return
   }
   if (probeTuiState) {
-    await runTuiStateProbe()
+    if (probeReplay) await runReplayProbe()
+    else await runTuiStateProbe()
     return
   }
   await runSpike()

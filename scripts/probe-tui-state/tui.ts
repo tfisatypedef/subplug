@@ -38,6 +38,7 @@ type ProbeContext = {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 const maxWait = Math.max(5_000, Math.min(180_000, Number(process.env.SUBPLUG_PROBE_TIMEOUT_MS) || 90_000))
 const taskMode = process.env.SUBPLUG_PROBE_TASK === "1"
+const replayMode = process.env.SUBPLUG_PROBE_REPLAY === "1"
 
 async function bounded<T>(operation: Promise<T>, label: string, timeoutMs = 10_000): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -218,7 +219,23 @@ export default Plugin.define({
           directoryExists: (directory) => Boolean(directory && existsSync(directory)),
         })
         const selectedModel = model()
-        if (execute && !selectedModel) {
+        if (replayMode) {
+          // A late subscriber: sessions and their events already exist on the
+          // server before this plugin subscribes. Record only what arrives live.
+          const windowMs = Math.max(3_000, Math.min(maxWait, 8_000))
+          const deadline = Date.now() + windowMs
+          while (!disposed && Date.now() < deadline) await sleep(250)
+          const storeList = ctx.data.session.list() ?? []
+          result = {
+            remote,
+            locationAvailable: Boolean(ctx.location?.directory),
+            sessionCount: storeList.length,
+            replayWindowMs: windowMs,
+            storeSessions: storeList
+              .map((session) => (typeof session.id === "string" ? session.id : undefined))
+              .filter((id): id is string => Boolean(id)),
+          }
+        } else if (execute && !selectedModel) {
           errors.push("SUBPLUG_PROBE_MODEL must be provider/model for execution mode")
         } else if (taskMode) {
           if (!selectedModel) {
@@ -367,7 +384,7 @@ export default Plugin.define({
         if (!disposed) {
           write({
             schema: 1,
-            mode: taskMode ? "task" : execute ? "execute" : "hydrate",
+            mode: replayMode ? "replay" : taskMode ? "task" : execute ? "execute" : "hydrate",
             outcome: errors.length
               ? (execute && (
                   !model() ||

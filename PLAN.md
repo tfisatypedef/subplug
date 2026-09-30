@@ -1174,20 +1174,37 @@ direct-vs-Code-Mode tool routing, recorded above as unverified.
 
 Resolve open question 1 without assuming that subscribing replays history.
 
-- [ ] In an isolated workspace, create a root/child and emit events before
+- [x] In an isolated workspace, create a root/child and emit events before
   loading a probe subscriber. Compare what the late subscriber receives with
-  what a subscriber established before the run receives.
-- [ ] Restart with the existing hub, then with an empty hub. Check server
+  what a subscriber established before the run receives. `--probe-replay`
+  (fresh `SUBPLUG_HARNESS_DIR`) published two sessions, then attached a late
+  subscriber: no pre-existing events arrived, while a live session created
+  during the same window did. The TUI store also started cold (`sessionCount`
+  0 for pre-existing sessions) until backfill runs.
+- [x] Restart with the existing hub, then with an empty hub. Check server
   tool visibility separately from TUI backfill, including parent links and
-  status. Identify which metadata is durable and which must be read live.
-- [ ] Document the observed recovery guarantee. If acceptance requires more
+  status. Identify which metadata is durable and which must be read live. The
+  restart leg retained the hub JSONL (7 records, 3 `session.created`) and
+  re-registered the tools (`features.server: true`, `state: active`) against
+  the existing hub. The empty-hub path is the ordinary cold start; the
+  activation-window gap is closed by TUI backfill. Status/cost/messages are
+  live reads, not hub state.
+- [x] Document the observed recovery guarantee. If acceptance requires more
   recovery than the host provides, specify and implement a bounded native
   session import through verified v2 APIs; do not rely on replay accidentally
-  observed in one development build.
+  observed in one development build. The guarantee is documented in README
+  under "Recovery contract". No new import was added: the existing TUI
+  backfill (`client.session.list()` → missing `session.created` records)
+  already covers the only recovery the host cannot do server-side, and the
+  server context still has no session-listing API.
 
 Acceptance: a reproducible restart matrix and an explicit recovery contract
 in README. Any added import has limits, no duplicate records, and tests for
 missing/deleted sessions and failing native lookups.
+Met on opencode `2.0.20` (Windows, 2026-09-29): `--probe-replay` is the
+reproducible matrix; `test/tui-data.test.ts` covers malformed rows, known and
+deleted sessions (no duplicates, no resurrection), an empty native list, and a
+failing native lookup. No import was added, so no new import limits apply.
 
 ### R3 — visual v2 acceptance
 
