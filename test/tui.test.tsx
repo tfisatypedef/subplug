@@ -280,7 +280,11 @@ describe("subplug TUI layout", () => {
     ))
     const frame = setup.captureCharFrame()
     expect(frame).toContain("• child session")
-    expect(frame).toContain("· current")
+    // The parent is selected first in the nested list; step to the child to
+    // surface the detail pane's current marker.
+    await stub.press("subplug.select.next")
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("· current")
     setup.renderer.destroy()
   })
 
@@ -659,22 +663,34 @@ describe("TUI command center keys", () => {
     }
   })
 
-  test("tabs filter, grouping persists, and expansion only acts in Hierarchy", async () => {
+  test("tabs filter, grouping persists, and collapse acts in a nested project", async () => {
     const opened: string[] = []
     const stub = stubCtx()
     const setup = await renderHosted(() => (
       <Dashboard ctx={stub.ctx} state={monitorState} onClose={() => undefined} openSession={(id) => opened.push(id)} compose={() => undefined} />
     ))
     try {
-      await stub.press("subplug.collapse")
-      await stub.press("subplug.expand")
-      expect(opened).toEqual([])
-      await stub.press("subplug.filter.next")
-      await stub.press("subplug.open.selected")
-      expect(opened).toEqual([])
-      await stub.press("subplug.filter.prev")
+      // Break away flattens the project list; the child is then the newest row.
+      await stub.press("subplug.breakAway")
+      await setup.flush()
+      expect((stub.preferences.get("preferences") as { flat?: boolean }).flat).toBe(true)
       await stub.press("subplug.open.selected")
       expect(opened).toEqual(["ses_child0000001"])
+
+      // Filtering to Needs you leaves no tasks, so opening is a no-op.
+      await stub.press("subplug.filter.next")
+      await stub.press("subplug.open.selected")
+      expect(opened).toEqual(["ses_child0000001"])
+      await stub.press("subplug.filter.prev")
+
+      // Back to nested: collapse hides the child and persists.
+      await stub.press("subplug.breakAway")
+      await setup.flush()
+      expect((stub.preferences.get("preferences") as { flat?: boolean }).flat).toBe(false)
+      await stub.press("subplug.collapse")
+      expect((stub.preferences.get("preferences") as { collapsed?: string[] }).collapsed).toEqual(["ses_root00000001"])
+      await stub.press("subplug.expand")
+      expect((stub.preferences.get("preferences") as { collapsed?: string[] }).collapsed).toEqual([])
 
       await stub.press("subplug.group")
       expect((stub.preferences.get("preferences") as { grouping?: string }).grouping).toBe("status")
@@ -725,7 +741,7 @@ describe("TUI command center keys", () => {
     ))
     try {
       await stub.press("subplug.open.selected")
-      expect(opened).toEqual(["ses_child0000001"])
+      expect(opened).toEqual(["ses_root00000001"])
 
       await stub.press("subplug.help")
       await setup.flush()

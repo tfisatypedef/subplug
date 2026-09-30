@@ -69,12 +69,43 @@ describe("command center rows", () => {
     session({ sessionID: "other", title: "other", directory: "/work/b", lastEventAt: 30, status: "busy" }),
   ]
 
-  test("project grouping emits group headers and recency-ordered tasks", () => {
+  test("project grouping nests children under their parent by default", () => {
     const { rows, tasks } = buildCenterRows(sessions, { filter: null, search: "", grouping: "project" })
     const headers = rows.filter((row) => row.kind === "group")
     expect(headers.map((row) => row.label)).toEqual(["/work/a", "/work/b"])
-    expect(tasks.map((task) => task.session.sessionID)).toEqual(["child", "root", "other"])
+    expect(tasks.map((task) => task.session.sessionID)).toEqual(["root", "child", "other"])
+    expect(tasks.find((task) => task.session.sessionID === "child")?.depth).toBe(1)
+    expect(tasks.find((task) => task.session.sessionID === "root")?.hasChildren).toBe(true)
     expect(rows.some((row) => row.kind === "gap")).toBe(true)
+  })
+
+  test("breaking away flattens subagents back into the project list", () => {
+    const { tasks } = buildCenterRows(sessions, { filter: null, search: "", grouping: "project", flat: true })
+    expect(tasks.map((task) => task.session.sessionID)).toEqual(["child", "root", "other"])
+    expect(tasks.every((task) => task.depth === 0)).toBe(true)
+    expect(tasks.every((task) => !task.hasChildren)).toBe(true)
+  })
+
+  test("nested project grouping honours collapse", () => {
+    const collapsed = buildCenterRows(sessions, {
+      filter: null,
+      search: "",
+      grouping: "project",
+      state: centerState(sessions, () => false, new Set(["root"])),
+    })
+    expect(collapsed.tasks.map((task) => task.session.sessionID)).toEqual(["root", "other"])
+    expect(collapsed.tasks.find((task) => task.session.sessionID === "root")?.collapsed).toBe(true)
+  })
+
+  test("flat project grouping does not nest, so collapse does not hide rows", () => {
+    const collapsed = buildCenterRows(sessions, {
+      filter: null,
+      search: "",
+      grouping: "project",
+      flat: true,
+      state: centerState(sessions, () => false, new Set(["root"])),
+    })
+    expect(collapsed.tasks.map((task) => task.session.sessionID)).toEqual(["child", "root", "other"])
   })
 
   test("status grouping orders needs, working, ready, inactive", () => {
