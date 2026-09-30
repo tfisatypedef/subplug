@@ -116,12 +116,12 @@ active plugin inventory.
 
 ## Two-device acceptance (LAN or Tailscale)
 
-The V7.R2 checklist in `V7PLAN.md` needs two machines: a server with a
-configured model, and a client that attaches. The server can be reached over
-the LAN or an encrypted overlay — `<server-ip>` below is either (see the
-README's Remote attach section). With a WSL2 client, run the server on the
-second device so the client connects outbound (WSL2's NAT does not accept
-inbound LAN connections without host port forwarding).
+The V7.R2 two-device checklist needs two machines: a server with a configured
+model, and a client that attaches. The server can be reached over the LAN or an
+encrypted overlay — `<server-ip>` below is either (see the README's Remote
+attach section). With a WSL2 client, run the server on the second device so the
+client connects outbound (WSL2's NAT does not accept inbound LAN connections
+without host port forwarding).
 
 ### Server device setup
 
