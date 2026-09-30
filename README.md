@@ -13,12 +13,14 @@ optional peer dependencies, so the host's copies are used.
 
 ## Install
 
-`subplug` is not on npm yet; until the first release, install from the git spec
-(or a clone, see [CONTRIBUTING.md](CONTRIBUTING.md)).
+```sh
+opencode plugin add subplug
+```
+
+Or install straight from git instead of npm:
 
 ```sh
-opencode plugin add subplug                       # from npm (once published)
-opencode plugin add github:tfisatypedef/subplug   # git spec
+opencode plugin add github:tfisatypedef/subplug
 ```
 
 Restart opencode afterwards. That is the whole config: the single entry loads
