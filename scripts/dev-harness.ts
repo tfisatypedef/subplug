@@ -761,8 +761,14 @@ async function runReplayProbe(): Promise<void> {
     }, { serverURL: base })
 
     // Live contrast: publish one session while the probe is subscribed. It must
-    // arrive even though the earlier events do not.
-    await sleep(4500)
+    // arrive even though the earlier events do not. Wait for the probe to
+    // announce that its subscriptions are live, so a cold plugin load cannot
+    // turn a real delivery into a miss; fall back to a fixed delay if the
+    // marker never appears.
+    const readyMarker = join(probeDir, "tui-state-probe-ready.json")
+    const subscribed = await waitFor(() => existsSync(readyMarker), 30_000, "probe subscriber ready")
+    if (!subscribed) log("probe ready marker not seen; using a fixed delay before the live event")
+    await sleep(500)
     const liveID = await createSession("replay live")
     log(`published live session during the probe window: ${liveID}`)
 

@@ -68,6 +68,20 @@ function write(data: Record<string, unknown>): void {
   }
 }
 
+/**
+ * Announce that the event subscriptions are live. The parent harness waits for
+ * this before publishing a "live" event, so a cold plugin load cannot make a
+ * real live delivery look like a miss.
+ */
+function markReady(): void {
+  try {
+    mkdirSync(probeDir(), { recursive: true })
+    writeFileSync(join(probeDir(), "tui-state-probe-ready.json"), `${JSON.stringify({ at: Date.now() })}\n`)
+  } catch {
+    // A missing ready marker only costs the harness its synchronization wait.
+  }
+}
+
 function unwrap(value: unknown): unknown {
   if (value && typeof value === "object" && "data" in (value as Record<string, unknown>)) {
     return (value as Record<string, unknown>).data
@@ -235,6 +249,7 @@ export default Plugin.define({
           })
           if (typeof dispose === "function") off.push(dispose)
         }
+        markReady()
 
         const remote = await detectRemote("auto", ctx.location?.directory, {
           info: () => bounded(ctx.client.server?.info() ?? Promise.resolve(undefined), "server info"),
@@ -375,6 +390,19 @@ export default Plugin.define({
 
           const clientList = rows(await bounded(ctx.client.session.list?.({ limit: 200 }) ?? Promise.resolve(undefined), "session list").catch(() => undefined))
           const storeList = ctx.data.session.list() ?? []
+
+          if (!execute) {
+            // Prompt admission can reach the store after the fixed observation
+            // window on a cold attach. Wait briefly for the admitted prompt
+            // instead of failing the hydration leg on a single check.
+            const hydrateDeadline = Date.now() + 10_000
+            while (!disposed && Date.now() < hydrateDeadline) {
+              if (ctx.data.session.message.list(childID).length) break
+              await bounded(ctx.data.session.message.sync(childID), "message sync").catch(() => undefined)
+              await sleep(250)
+            }
+          }
+
           const storeMessages = ctx.data.session.message.list(childID)
           const rootSample = sampleSession(ctx, rootID)
           const scratchSample = sampleSession(ctx, childID)
