@@ -292,6 +292,8 @@ bun run scripts/dev-harness.ts --tui                         # headless TUI load
 bun run scripts/dev-harness.ts --probe-tui-state             # plugin store + session.context coverage
 SUBPLUG_PROBE_MODEL=provider/model bun run scripts/dev-harness.ts \
   --probe-tui-state --attach --probe-execute  # one bounded scratch prompt
+SUBPLUG_PROBE_MODEL=provider/model bun run scripts/dev-harness.ts \
+  --probe-tui-state --attach --probe-task     # one task-created child, folded parent check
 SUBPLUG_PROBE_SERVER_URL=http://<server-ip>:4096 OPENCODE_PASSWORD=<password> \
   SUBPLUG_PROBE_MODEL=provider/model bun run scripts/dev-harness.ts \
   --probe-tui-state --existing-server --probe-execute
@@ -316,6 +318,12 @@ writes inside the repo would retrigger plugin reloads.
   selected model. It never seeds server workspace files or stops the server.
   Run that mode on a second device for the V7 LAN acceptance checklist in
   `V7PLAN.md`; the same-machine `--attach` run is an earlier gate.
+
+  `--probe-task` additionally prompts the root to create one real `task`
+  subagent, then verifies that the child's `parentID` matches the root and that
+  the folded hub node is a `subagent` with a coordination identity. It is
+  model-dependent: a run where the model does not call `task` reports
+  `outcome: incomplete` rather than failing.
 
 The spike seeds a `coordination/claims` registry, starts a throwaway
 `opencode serve` with Basic auth under a scratch config, forces plugin

@@ -1125,30 +1125,50 @@ dead, so a competitor replaces the lease instead of being denied.
 This section supersedes the historical v1 "remaining" and handoff notes for
 the current `v7-remote` checkout. The v2 port and V7 feature implementation
 are present. V7 execution/LAN acceptance is specified in `V7PLAN.md` under
-"Remaining work specification"; do not count its single-machine hydration
-probe as a live model or two-device pass. Current review fixes pass typecheck
-and 186 tests and remain uncommitted as of this entry.
+"Remaining work specification"; its single-machine execution and task-child
+runs pass, but the two-device LAN pass is still pending. R0/R1 review fixes and
+probe work are committed on `v7-remote`; the suite passes 186 tests and
+`bun run typecheck` is clean.
 
 ### R1 — live v2 event and subagent contract
 
 Resolve open questions 3 and 5 using the execution-capable V7 probe and one
 real task-created child. Record the installed host and plugin versions.
 
-- [ ] Capture the event types and relevant field shapes for execution start,
+- [x] Capture the event types and relevant field shapes for execution start,
   successful completion, interruption, failure, retry, and task creation.
   Exercise optional/failure paths only where the installed host supports
-  them; report unsupported paths explicitly.
-- [ ] Compare emitted records with `recordFor` and the TUI notification
+  them; report unsupported paths explicitly. Evidence (opencode `2.0.20`,
+  plugin `0.2.0`, `opencode/nemotron-3.5-lightning-free`): `session.created`
+  carries `parentID`+`agent` for a task child (roots omit `parentID`);
+  `session.execution.started`/`succeeded`, `session.inbox.enqueued/delivered`,
+  `session.step.started/ended`, `session.usage.updated` all fire.
+  `session.status` and `session.idle` did **not** fire on this host, so the
+  `session.execution.*` fallback in `recordFor` is the working path.
+  Interruption/failure/retry were not exercised (optional path; not reported
+  as supported).
+- [x] Compare emitted records with `recordFor` and the TUI notification
   subscriptions. Verify a successful run ends idle, a failed run does not
   remain busy, and child `parentID`, agent/model when supplied, and distinct
-  coordination identity survive folding.
-- [ ] Verify both direct tools and Code Mode where available; document which
+  coordination identity survive folding. Evidence: `--probe-execute` saw busy
+  then idle with an assistant transcript; `--probe-task` folded the child as
+  `kind: subagent` with `parentID` = root, `agent: general`, `model`, and a
+  distinct `Harness Agent@<host>/<sessionID>` identity. No mapping fix was
+  needed; the existing `recordFor`/`foldSessions` coverage already matches.
+  A failed run was not exercised.
+- [x] Verify both direct tools and Code Mode where available; document which
   path ran. Restore a bounded v2 `--probe-task` only if automation is useful;
-  do not reuse the removed v1 HTTP endpoints.
+  do not reuse the removed v1 HTTP endpoints. `--probe-task` is restored as an
+  opt-in mode that prompts the root to create one real `task` subagent and
+  checks the folded parent link. Code Mode versus direct tool routing was not
+  distinguished by the probe; the subscribed event list omits
+  `session.tool.*`, so that remains unverified.
 
 Acceptance: redacted event-shape evidence, a correct folded root/child state,
 and regression tests for any mapping fix. Avoid committing full transcripts
 or credentials. Reuse the V7 run where it supplies the same evidence.
+Met on opencode `2.0.20` (Windows, 2026-09-29); the only unmet check is the
+direct-vs-Code-Mode tool routing, recorded above as unverified.
 
 ### R2 — durable replay and recovery contract
 

@@ -1,14 +1,17 @@
 # subplug V7 — remote access (brainstorm)
 
-Status: **V7.1–V7.5 implemented (V7.0 probe done); execution and two-device LAN
-acceptance remain pending.** Open decisions answered (see "Resolved decisions"); scope locked
+Status: **V7.1–V7.5 implemented (V7.0 probe done); V7.R0 review fixes and V7.R1
+probe landed; single-machine execution and task-child acceptance pass on
+`opencode` 2.0.20; two-device LAN acceptance remains pending.** Open decisions
+answered (see "Resolved decisions"); scope locked
 to read-only + comms with a hub-free remote. Supersedes the earlier standalone
 `subplug-v2` draft, which wrongly proposed a new plugin. subplug is **already a
 v2 plugin**; V7 is a delta on its `v2` branch, checked out in
 `C:\Users\weaka\opsesh` (`v7-remote`, based on `origin/v2`). Gates green on
-Windows (2026-09-29): `bun run typecheck`, `bun test` (183 pass / 0 fail),
-`bun run canary`, and harness `spike` / `--tui` / `--probe-tui-state [--attach]`
-/ `--demo` / `--inspect`.
+Windows (2026-09-29): `bun run typecheck`, `bun test` (186 pass / 0 fail),
+`bun run canary`, and harness `spike` / `--tui` /
+`--probe-tui-state [--attach] [--probe-execute] [--probe-task]` /
+`--demo` / `--inspect`.
 
 ## Goal
 
@@ -294,16 +297,24 @@ through an attached TUI; the result distinguishes admission from execution,
 shows busy then idle, and confirms an assistant transcript. The probe must
 remain optional; normal tests and CI need no model credentials.
 
-Probe code and R0 tests are implemented locally. The execution acceptance and
-two-device run remain pending; neither is established by typecheck or the
-provider-free hydration mode.
+Probe code and R0 tests are implemented locally. Two-device LAN acceptance
+remains pending; it is not established by typecheck or the provider-free
+hydration mode.
 
-Local checks on opencode `2.0.20` (Windows, 2026-09-29): the provider-free
-same-machine `--attach` and client-only `--existing-server` modes both returned
-`outcome: pass`. The latter used a separately started local server and left it
-running until the test stopped it. `--probe-execute` without a model returned
-`outcome: incomplete` and a nonzero exit, as intended. These checks contain no
-model execution or LAN status-latency evidence.
+Single-machine acceptance on opencode `2.0.20` (Windows, 2026-09-29, plugin
+`0.2.0`, model `opencode/nemotron-3.5-lightning-free`), all `outcome: pass`:
+the provider-free `--attach` hydration mode, the client-only
+`--existing-server` mode (against a separately started local server it left
+running), `--probe-execute` with a configured model, and `--probe-task` with a
+real task-created child. Execution evidence: admission 25 ms, busy observed
+after `session.execution.started`, idle after `session.execution.succeeded`,
+assistant transcript present, ~4.8 s wall time. Task evidence: the child's
+`session.created` carries `parentID` and `agent`; the child's `parentMatches`
+is true and the folded hub node is `kind: subagent` with
+`parentID` = root, `agent: general`, `model`, and a distinct coordination
+identity. `--probe-execute` without a model returned `outcome: incomplete` and
+a nonzero exit, as intended. These checks contain no LAN status-latency
+evidence (item (b) stays deferred) and no failure/interruption/retry path.
 
 ### V7.R2 — two-device LAN acceptance
 

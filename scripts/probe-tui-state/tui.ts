@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { Plugin } from "@opencode/plugin/tui"
-import { fallbackStateDir } from "../../src/hub/paths.ts"
+import { readMonitorState } from "../../src/hub/monitor.ts"
+import { fallbackStateDir, readHubPointer } from "../../src/hub/paths.ts"
 import { detectRemote, localInterfaceHosts } from "../../src/tui/remote.ts"
 
 type Session = Record<string, unknown>
@@ -36,6 +37,7 @@ type ProbeContext = {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 const maxWait = Math.max(5_000, Math.min(180_000, Number(process.env.SUBPLUG_PROBE_TIMEOUT_MS) || 90_000))
+const taskMode = process.env.SUBPLUG_PROBE_TASK === "1"
 
 async function bounded<T>(operation: Promise<T>, label: string, timeoutMs = 10_000): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -140,6 +142,27 @@ function sampleSession(ctx: ProbeContext, sessionID: string): Record<string, unk
   }
 }
 
+/** Read the folded session node the server plugin wrote for this session. */
+function hubNode(sessionID: string, repoRoot: string | undefined): Record<string, unknown> | undefined {
+  try {
+    const pointer = readHubPointer()
+    if (!pointer) return undefined
+    const node = readMonitorState(pointer.hubDir, repoRoot).sessions.find((session) => session.sessionID === sessionID)
+    if (!node) return { found: false }
+    return {
+      found: true,
+      kind: node.kind,
+      parentID: node.parentID,
+      agent: node.agent,
+      model: node.model,
+      identity: node.identity,
+      status: node.status,
+    }
+  } catch {
+    return undefined
+  }
+}
+
 export default Plugin.define({
   id: "subplug.probe.tui-state",
   async setup(rawContext) {
@@ -154,6 +177,8 @@ export default Plugin.define({
       const costs: Array<{ at: number; value: number }> = []
       const errors: string[] = []
       let childID: string | undefined
+      let rootID: string | undefined
+      let taskChildID: string | undefined
       let result: Record<string, unknown> = {}
       try {
         // Register before admitting the prompt. Store only event names, IDs and
@@ -176,15 +201,13 @@ export default Plugin.define({
             const data = event && typeof event === "object" ? (event as { data?: unknown }).data : undefined
             const record = data && typeof data === "object" ? (data as Record<string, unknown>) : {}
             const sessionID = typeof record.sessionID === "string" ? record.sessionID : undefined
-            if (childID && sessionID && sessionID !== childID) return
+            const parentID = typeof record.parentID === "string" ? record.parentID : undefined
+            // A task-created child announces itself through its parent link.
+            if (type === "session.created" && parentID && rootID && parentID === rootID) taskChildID = sessionID
+            const watched = [childID, taskChildID].filter((value): value is string => Boolean(value))
+            if (watched.length && sessionID && !watched.includes(sessionID)) return
             if (events.length >= 200) return
-            events.push({
-              at: Date.now(),
-              type,
-              sessionID,
-              parentID: typeof record.parentID === "string" ? record.parentID : undefined,
-              fields: Object.keys(record).sort(),
-            })
+            events.push({ at: Date.now(), type, sessionID, parentID, fields: Object.keys(record).sort() })
           })
           if (typeof dispose === "function") off.push(dispose)
         }
@@ -197,9 +220,72 @@ export default Plugin.define({
         const selectedModel = model()
         if (execute && !selectedModel) {
           errors.push("SUBPLUG_PROBE_MODEL must be provider/model for execution mode")
+        } else if (taskMode) {
+          if (!selectedModel) {
+            errors.push("SUBPLUG_PROBE_MODEL must be provider/model for task mode")
+          } else {
+            const root = await bounded(ctx.client.session.create({ title: "subplug probe root", model: selectedModel }), "root create")
+            rootID = root?.id
+            if (!rootID) throw new Error("root session has no id")
+
+            const promptAt = Date.now()
+            const admitted = await bounded(ctx.client.session.prompt({
+              sessionID: rootID,
+              text: "Use the task tool exactly once to start a subagent. Tell that subagent to reply with the single word TASK_OK and do nothing else. Then stop.",
+            }), "task prompt admission", 20_000)
+            const admittedAt = Date.now()
+
+            const childDeadline = Date.now() + maxWait
+            while (!disposed && Date.now() < childDeadline && !taskChildID) await sleep(250)
+
+            let sawBusy = false
+            let sawIdleAfterBusy = false
+            let storeMessages = 0
+            if (taskChildID) {
+              const idleDeadline = Date.now() + maxWait
+              while (!disposed && Date.now() < idleDeadline) {
+                const current = status(ctx, taskChildID)
+                if (statuses.at(-1)?.value !== current) statuses.push({ at: Date.now(), value: current })
+                if (current === "running" || current === "busy") sawBusy = true
+                if (sawBusy && current === "idle") { sawIdleAfterBusy = true; break }
+                await sleep(250)
+              }
+              await bounded(ctx.data.session.message.sync(taskChildID), "task message sync").catch(() => undefined)
+              storeMessages = ctx.data.session.message.list(taskChildID).length
+            }
+
+            const rootSample = sampleSession(ctx, rootID)
+            const taskChildSample = taskChildID ? sampleSession(ctx, taskChildID) : undefined
+            const folded = taskChildID ? hubNode(taskChildID, ctx.location?.directory) : undefined
+            result = {
+              remote,
+              locationAvailable: Boolean(ctx.location?.directory),
+              sessionCount: (ctx.data.session.list() ?? []).length,
+              root: rootSample,
+              taskChild: taskChildSample,
+              taskChildID,
+              parentMatches: Boolean(taskChildID && taskChildSample?.parentID === rootID),
+              hubNode: folded,
+              storeMessages,
+              admittedID: admitted?.id,
+              promptAt,
+              admittedAt,
+              admissionMs: admittedAt - promptAt,
+              execution: { sawTaskChild: Boolean(taskChildID), sawBusy, sawIdleAfterBusy },
+            }
+            if (!admitted?.id) errors.push("task prompt admission did not return a message id")
+            if (!taskChildID) errors.push("no task-created child session observed")
+            if (taskChildID && taskChildSample?.parentID !== rootID) errors.push("task child parentID did not match the root")
+            if (!folded || folded.found === false) errors.push("task child was not folded into the hub")
+            else {
+              if (folded.kind !== "subagent") errors.push("folded task child kind is not subagent")
+              if (folded.parentID !== rootID) errors.push("folded task child lost its parent link")
+              if (!folded.identity) errors.push("folded task child has no coordination identity")
+            }
+          }
         } else {
           const root = await bounded(ctx.client.session.create({ title: "subplug probe root", ...(selectedModel ? { model: selectedModel } : {}) }), "root create")
-          const rootID = root?.id
+          rootID = root?.id
           if (!rootID) throw new Error("root session has no id")
           const child = await bounded(ctx.client.session.create({ title: "subplug probe scratch", ...(selectedModel ? { model: selectedModel } : {}) }), "scratch create")
           childID = child?.id
@@ -281,12 +367,14 @@ export default Plugin.define({
         if (!disposed) {
           write({
             schema: 1,
-            mode: execute ? "execute" : "hydrate",
+            mode: taskMode ? "task" : execute ? "execute" : "hydrate",
             outcome: errors.length
               ? (execute && (
                   !model() ||
                   errors.includes("provider or selected model unavailable") ||
-                  (result.execution && !(result.execution as { sawBusy?: boolean }).sawBusy)
+                  (taskMode
+                    ? !result.taskChildID
+                    : result.execution && !(result.execution as { sawBusy?: boolean }).sawBusy)
                 ) ? "incomplete" : "fail")
               : "pass",
             startedAt,

@@ -36,6 +36,7 @@ const probeTuiState = process.argv.includes("--probe-tui-state")
 const attachMode = process.argv.includes("--attach")
 const existingServerMode = process.argv.includes("--existing-server")
 const probeExecute = process.argv.includes("--probe-execute")
+const probeTask = process.argv.includes("--probe-task")
 const verbose = process.argv.includes("--verbose")
 
 const harnessIdentity = `Harness Agent@${hostname()}`
@@ -536,7 +537,8 @@ async function runTuiStateProbe(): Promise<void> {
 
   const { child, output } = spawnTui({
     SUBPLUG_PROBE_DIR: probeDir,
-    SUBPLUG_PROBE_EXECUTE: probeExecute ? "1" : "0",
+    SUBPLUG_PROBE_EXECUTE: probeExecute || probeTask ? "1" : "0",
+    SUBPLUG_PROBE_TASK: probeTask ? "1" : "0",
     SUBPLUG_PROBE_PLUGIN_VERSION: JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version as string,
   }, { serverURL })
   const marker = join(probeDir, "tui-state-probe.json")
@@ -601,7 +603,8 @@ async function runExistingServerProbe(): Promise<void> {
     XDG_DATA_HOME: join(clientDir, "data"),
     XDG_CACHE_HOME: join(clientDir, "cache"),
     SUBPLUG_PROBE_DIR: probeDir,
-    SUBPLUG_PROBE_EXECUTE: probeExecute ? "1" : "0",
+    SUBPLUG_PROBE_EXECUTE: probeExecute || probeTask ? "1" : "0",
+    SUBPLUG_PROBE_TASK: probeTask ? "1" : "0",
     SUBPLUG_PROBE_PLUGIN_VERSION: JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version as string,
   }
   delete env.SUBPLUG_STORAGE_DIR
@@ -812,8 +815,8 @@ async function runSpike(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  if ((existingServerMode || probeExecute) && !probeTuiState) {
-    throw new Error("--existing-server and --probe-execute require --probe-tui-state")
+  if ((existingServerMode || probeExecute || probeTask) && !probeTuiState) {
+    throw new Error("--existing-server, --probe-execute and --probe-task require --probe-tui-state")
   }
   if (existingServerMode && attachMode) {
     throw new Error("choose either --existing-server or --attach")
