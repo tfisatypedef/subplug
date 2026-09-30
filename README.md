@@ -12,7 +12,8 @@ Compatible with opencode `2.x` (`@opencode/plugin` `^2.0.19`). Nightly
 host's copies are used and no duplicate Solid instance is installed.
 
 Requirements: [Bun](https://bun.sh) `>= 1.3` (for local dev) and opencode v2
-(the `opencode2` binary from `@opencode/cli`).
+(from `@opencode/cli`; installed as `opencode`, with a legacy `opencode2`
+alias for the same binary).
 
 Runtime boundary (Node): there is no Node-hosted opencode v2 distribution to
 target. `@opencode/cli@2.0.20` ships per-platform compiled binaries
@@ -288,14 +289,20 @@ tools/shell/files on the server machine.
 On the server machine:
 
 ```sh
-OPENCODE_PASSWORD=<password> opencode2 serve --hostname 0.0.0.0 --port 4096
+OPENCODE_PASSWORD=<password> opencode serve --hostname 0.0.0.0 --port 4096
 ```
 
 On the client machine:
 
 ```sh
-OPENCODE_PASSWORD=<password> opencode2 --server http://<server-ip>:4096
+OPENCODE_PASSWORD=<password> opencode --server http://<server-ip>:4096
 ```
+
+`<server-ip>` is the server machine's LAN address (`hostname -I` or
+`ip -4 addr` on Linux, `ipconfig getifaddr en0` on macOS, `ipconfig` on
+Windows), inbound TCP 4096 must be allowed by its firewall, and both machines
+must be on the same network. Loopback (`127.0.0.1`) only reaches a server on
+the same machine, so a cross-device run must use the LAN address.
 
 subplug detects the attach automatically (the advertised `urls` don't match any
 local interface, with the session directory as a fallback) and renders from the
@@ -312,8 +319,8 @@ is sniffable — and one attached server at a time.
 bun install
 bun run typecheck
 bun test
-OPENCODE_BIN=/path/to/opencode2 bun run canary               # host is v2 + matching @opencode/plugin
-OPENCODE_BIN=/path/to/opencode2 bun run canary --load        # canary plus the headless TUI load harness
+OPENCODE_BIN=/path/to/opencode bun run canary               # host is v2 + matching @opencode/plugin
+OPENCODE_BIN=/path/to/opencode bun run canary --load        # canary plus the headless TUI load harness
 bun run scripts/dev-harness.ts                               # headless server spike (scratch config + repo)
 bun run scripts/dev-harness.ts --tui                         # headless TUI load check (marker file)
 bun run scripts/dev-harness.ts --probe-tui-state             # plugin store + session.context coverage
@@ -404,15 +411,17 @@ otherwise re-pull both. To verify the exact npm artifact instead of a checkout,
 `npm pack`, extract `subplug-0.3.0.tgz`, `npm install` inside it, and point
 `package` at that directory.
 
-Configure a model/provider on the server (e.g. `opencode2 auth login`), then
+Configure a model/provider on the server (e.g. `opencode auth login`), then
 start it and allow TCP 4096 through the host firewall:
 
 ```sh
 OPENCODE_PASSWORD=<password> OPENCODE_CONFIG_DIR=~/subplug-server \
-  opencode2 serve --hostname 0.0.0.0 --port 4096
+  opencode serve --hostname 0.0.0.0 --port 4096
 ```
 
-Confirm the endpoint from the client before probing:
+Confirm the endpoint from the client before probing (`<server-ip>` is the
+server's LAN address; see Remote attach above — loopback only works on the same
+machine):
 
 ```sh
 curl -u "opencode:<password>" http://<server-ip>:4096/api/info
@@ -467,7 +476,7 @@ the tarball, `bun install` its declared deps, and point the harness at it with
 bun run scripts/dev-harness.ts --demo --keep
 # follow the printed launch instructions, e.g.:
 export OPENCODE_CONFIG_DIR="$TMPDIR/subplug-harness/config"
-opencode2 "$TMPDIR/subplug-harness/repo"
+opencode "$TMPDIR/subplug-harness/repo"
 ```
 
 `--demo` seeds a root session (busy), a subagent (idle), a joined claim, a
@@ -488,7 +497,7 @@ conflict, and a stale risk. In the TUI:
 
 ### Real `task` subagent check
 
-With the TUI (or `opencode2`) open in the demo repo, prompt:
+With the TUI (or `opencode`) open in the demo repo, prompt:
 
 > Spawn exactly one subagent with the task tool. Ask it to run
 > `node -p "process.env.COORD_AGENT_ID"` through its bash tool and report the
