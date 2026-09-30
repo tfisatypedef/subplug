@@ -38,6 +38,7 @@
     "tui.tsx",
     "src",
     "README.md",
+    "CONTRIBUTING.md",
     "LICENSE"
   ],
   "scripts": {

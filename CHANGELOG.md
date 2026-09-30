@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Hub selection is project-specific: a TUI reads the server's `hub.json` pointer
+  only when it names the TUI's own project group, so two projects open at once
+  can no longer read or backfill each other's hub.
+- Removed the dead `coord.injectIdentity` option (and `SUBPLUG_INJECT_IDENTITY`);
+  identity injection is always on in coordination-enabled repos, as documented.
+- Docs: public-facing README with a zero-config quick start and an npm-primary /
+  git-fallback install; development, probe, two-device, publishing, manual
+  verification, recovery, and remote-attach detail moved to `CONTRIBUTING.md`.
+
 ## 0.3.0
 
 Remote attach for opencode v2: monitor sessions running on another machine on

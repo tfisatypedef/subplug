@@ -6,102 +6,60 @@ claim registry. Viewing is read-only. An opt-out comms tier can send addressed
 messages between sessions with explicit delivery semantics (idle targets get a
 `steer`, running targets queue behind a confirmation): no abort, no broadcast.
 
-Compatible with opencode `2.x` (`@opencode/plugin` `^2.0.19`). Nightly
-`0.0.0-dev-*` builds are accepted by the canary. The TUI renderer packages
-(`@opentui/*`, `solid-js`) are declared as optional peer dependencies, so the
-host's copies are used and no duplicate Solid instance is installed.
-
-Requirements: [Bun](https://bun.sh) `>= 1.3` (for local dev) and opencode v2
-(from `@opencode/cli`; installed as `opencode`, with a legacy `opencode2`
-alias for the same binary).
-
-Runtime boundary (Node): there is no Node-hosted opencode v2 distribution to
-target. `@opencode/cli@2.0.20` ships per-platform compiled binaries
-(`bin/opencode.exe`, with `@opencode/cli-<platform>` optional dependencies) and
-the host loads plugins with its embedded Bun runtime, so subplug ships
-TypeScript source and needs no build step. The optional web view keeps a clear
-"unavailable" message when `Bun.serve` is absent, so a non-Bun host degrades
-instead of failing.
+Compatible with opencode `2.x` (`@opencode/plugin` `^2.0.19`). Requires opencode
+v2 from `@opencode/cli` (installed as `opencode`; `opencode2` is a legacy alias
+for the same binary). The TUI renderer packages (`@opentui/*`, `solid-js`) are
+optional peer dependencies, so the host's copies are used.
 
 ## Install
 
-opencode discovers both entrypoints from `package.json` `exports["./server"]`
-and `exports["./tui"]`, or from `server.ts` / `tui.tsx` when the package is a
-local directory. One spec installs the server and TUI plugins together.
-
-### From npm
+`subplug` is not on npm yet; until the first release, install from the git spec
+(or a clone, see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ```sh
-opencode plugin add subplug
+opencode plugin add subplug                       # from npm (once published)
+opencode plugin add github:tfisatypedef/subplug   # git spec
 ```
 
-The CLI installs the package into the global config. Restart opencode
-afterwards. (The in-TUI plugin manager under `/plugins` can install, update,
-and list plugins instead.)
+Restart opencode afterwards. That is the whole config: the single entry loads
+the server and TUI plugins together and the TUI finds the server's hub
+automatically, so no `cli.json` entry is needed. The in-TUI plugin manager under
+`/plugins` can also install, update, and list plugins.
 
-### From a local clone (development)
-
-```sh
-git clone https://github.com/tfisatypedef/subplug.git ~/src/subplug
-cd ~/src/subplug && bun install          # runtime + test deps
-```
-
-Then add the clone as a local plugin directory. Local specs must be
-directories; the host loads `server.ts` and `tui.tsx` from the root:
-
-`opencode.json` (server):
-
-```json
-{
-  "plugins": [{ "package": "/home/you/src/subplug", "options": { "storageDir": "/tmp/subplug-hub" } }]
-}
-```
-
-`cli.json` in the same config directory (TUI; options do not propagate from
-`opencode.json`):
-
-```json
-{
-  "plugins": [{ "package": "/home/you/src/subplug", "options": { "storageDir": "/tmp/subplug-hub" } }]
-}
-```
-
-### Manual config (published package)
-
-`opencode.json` (server) and `cli.json` (TUI), both in the config directory
-(global `OPENCODE_CONFIG_DIR` or a project's `.opencode/`):
+To set options, add them to the same `opencode.json` entry (see
+[Options](#options)):
 
 ```json
 {
   "plugins": [
-    { "package": "subplug", "options": { "comms": { "inject": true } } },
-    { "package": "subplug", "options": { "web": { "enabled": false } } }
+    { "package": "subplug", "options": { "comms": { "inject": true } } }
   ]
 }
 ```
 
-The server and TUI entries share one module; the host picks the right
-entrypoint from the package exports.
+To run from a local clone instead of npm/git, see
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### Update / remove
 
-- Update (npm): `opencode plugin update`, then restart opencode.
-- Update (clone): `cd /home/you/src/subplug && git pull && bun install`, then
-  restart opencode.
-- Remove: `opencode plugin remove subplug`, or delete the `plugins` entries
-  from `opencode.json` and `cli.json`.
+- Update: `opencode plugin update`, then restart opencode.
+- Remove: `opencode plugin remove subplug`, or delete the `plugins` entry from
+  `opencode.json`.
 
 ## Options
 
-Server options live in `opencode.json`; TUI options must be set in `cli.json`
-(or via `SUBPLUG_STORAGE_DIR`/`SUBPLUG_HUB_GROUP`), because opencode only
-passes plugin options to the entrypoint that declared them. When the TUI has no
+Server options live in `opencode.json`. TUI-only options (`route`,
+`intervalMs`, `sidebarAspect`, `remote`) can be set in `cli.json` or through
+`SUBPLUG_STORAGE_DIR`/`SUBPLUG_HUB_GROUP`/`SUBPLUG_REMOTE`. When the TUI has no
 explicit `storageDir`, it reads the hub pointer the server writes under
-`<stateDir>/subplug/hub.json`.
+`<stateDir>/subplug/hub.json`, and honors it only when it names the TUI's own
+project group.
+
+The everyday options are `comms.inject` and `web.enabled`; the rest tune the hub
+or the TUI and can usually be left at their defaults.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `coord.injectIdentity` | always on | Accepted for compatibility. In coordination-enabled repos the server prefixes `bash` tool commands with `export COORD_AGENT_ID=...`, so every session gets a distinct `<name>@<host>/<full session id>`; the base is cached per repository. |
 | `comms.inject` | `true` | Append pending inbox notices to the recipient's next prompt as one untrusted-data block (strict no-op when the inbox is empty); `false` disables. |
 | `storageDir` | opencode state dir | Override the hub root (also `SUBPLUG_STORAGE_DIR`). |
 | `hubGroup` | project id | Override the hub key so multiple clones/windows can share one hub (combine with a shared `storageDir`; also `SUBPLUG_HUB_GROUP`). Sanitized for the filesystem; degenerate values (`.`, `..`, empty) fall back to `unknown`. |
@@ -144,40 +102,22 @@ duplicate and never resurrects a deleted session.
 
 ### Recovery contract
 
-The hub is the only durable state; the event stream is live-only. A plugin that
-subscribes after an event was published does not receive it (verified on
-opencode `2.0.20`, plugin `0.2.0`: a late subscriber got no pre-existing session
-events while a live event during the same window arrived), so history is never
-replayed. The TUI store is likewise cold at boot for sessions it did not sync.
-
-After a restart with an existing hub, the server plugin re-subscribes and
-re-registers its tools, and readers fold the retained JSONL + snapshot, so
-server-side tool visibility and folded state (parent links, status, cost)
-survive the restart. The v2 server context has no session-listing API, so
-sessions created while no subscriber was attached are recovered only through
-the TUI backfill described above. Live session state — status, cost, messages —
-is always read through `ctx.data`/`ctx.client`; the hub holds only appended
-metadata. A remote attach reads and writes no local hub at all.
+The hub is the only durable state; the event stream is live-only, so history is
+never replayed. After a restart the server re-subscribes and re-registers its
+tools, and readers fold the retained JSONL + snapshot, so state (parent links,
+status, cost) survives. Live session state — status, cost, messages — is always
+read through the host; the hub holds appended metadata only, and a remote attach
+reads and writes no local hub at all.
 
 In coordination-enabled repos, a `git commit`/`git push`/`coord` command whose
 staged paths are not covered by the session's claims is recorded as a
-`command.risk` event (read-only check; nothing is ever blocked) and surfaced as
-a TUI toast.
-
-In coordination-enabled repos with `tools/coord.py`, `edit`, `write`, and
-`apply_patch` calls auto-acquire (or refresh) an exact-path edit lease for the
-calling session before the tool runs; a path leased by another session denies
-the call with the lease message. `apply_patch` checks every add/update/delete
-path plus both sides of a move. The denial is thrown from the tool hook, not
-swallowed by the monitoring catch. Shell commands that mutate files are not
-gated, and leases live in the per-worktree git directory, never in git.
-
-Hub layout: `<stateDir>/subplug/<hubKey>/events.<serverID>.jsonl` plus a folded
-`snapshot.json`, where `<hubKey>` is the project id unless `hubGroup` is set.
-Multiple servers append to separate files and every reader folds all of them,
-so several opencode windows on the same project aggregate automatically. To
-aggregate different clones, point them at the same `storageDir` and set the same
-`hubGroup`.
+`command.risk` event (read-only; nothing is blocked) and shown as a toast.
+`edit`, `write`, and `apply_patch` calls acquire exact-path edit leases before
+the tool runs; a path leased by another session denies the call. Hub layout is
+`<stateDir>/subplug/<hubKey>/events.<serverID>.jsonl` plus a folded
+`snapshot.json`; `<hubKey>` is the project id unless `hubGroup` is set, and
+several windows on one project aggregate automatically. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the full recovery contract.
 
 The server plugin also registers a `swarm_status` tool that returns the session
 tree plus active claims, conflicts, and the last passing verification. `format`
@@ -296,284 +236,27 @@ On the server machine:
 OPENCODE_PASSWORD=<password> opencode serve --hostname 0.0.0.0 --port 4096
 ```
 
-On the client machine:
+On the client machine (`<server-ip>` is the server's LAN or encrypted-overlay
+address; a cross-device run must use one of those, not `127.0.0.1`, and the
+server's firewall must allow inbound TCP 4096):
 
 ```sh
 OPENCODE_PASSWORD=<password> opencode --server http://<server-ip>:4096
 ```
 
-`<server-ip>` is the server's LAN address (`ip -4 addr` on Linux, where
-`hostname -I` is not portable; `ipconfig getifaddr en0` on macOS; `ipconfig` on
-Windows) or, off-LAN, an encrypted overlay address. Loopback (`127.0.0.1`) only
-reaches a server on the same machine, so a cross-device run must use a LAN or
-overlay address, and the server's firewall must allow inbound TCP 4096. An
-overlay normally handles that itself; `sudo ufw allow in on tailscale0 to any
-port 4096 proto tcp` is the fix if it does not.
+subplug detects the attach automatically and renders from the attached server's
+live `data.session`/`client` state. A remote attach is **hub-free**: it never
+reads or writes the local hub, so claims, conflicts, risk toasts and command
+history report "claims unavailable on remote" instead of showing wrong data.
+Force the mode with the `remote` TUI option (`auto`/`remote`/`local`) or
+`SUBPLUG_REMOTE`. Plain-HTTP Basic auth is sniffable on a shared network, so use
+a trusted LAN or an encrypted overlay; one attached server at a time.
 
-Off-LAN clients work over an encrypted overlay such as Tailscale: use the
-server's `100.x.y.z` address (`tailscale ip -4`) or MagicDNS name in place of
-`<server-ip>`. The overlay is already encrypted, so the plain-HTTP Basic
-credentials are not exposed in transit. With a WSL2 client, either enable
-mirrored networking (`[wsl2]` `networkingMode=mirrored` in
-`%UserProfile%\.wslconfig`, then `wsl --shutdown`) so WSL shares the host's
-overlay interface, or install Tailscale inside WSL. A native client on the same
-LAN needs no overlay — it connects outbound to the server's LAN address as-is.
-
-Prefer the overlay address directly. If you front the server with
-`tailscale serve`, bind it to `0.0.0.0` rather than `127.0.0.1`: a loopback
-bind advertises `http://127.0.0.1:<port>` in `/api/info`, which every client
-matches against its own loopback and classifies as local, so auto-detection
-skips the hub-free remote path. If you must bind loopback, force the mode with
-the `remote` option.
-
-subplug detects the attach automatically (the advertised `urls` don't match any
-local interface, with the session directory as a fallback) and renders from the
-attached server's live `data.session`/`client` state. A remote attach is
-**hub-free**: it never reads or writes the local hub, so claims, conflicts, risk
-toasts and command history degrade to "claims unavailable on remote" instead of
-showing wrong data. Force the mode with the `remote` TUI option
-(`auto`/`remote`/`local`) or `SUBPLUG_REMOTE`. Plain-HTTP Basic auth is
-sniffable on a shared network, so a remote attach is for a trusted LAN or an
-encrypted overlay; one attached server at a time.
+Tailscale/WSL2 setup and the `tailscale serve` loopback caveat are in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Development
 
-```sh
-bun install
-bun run typecheck
-bun test
-OPENCODE_BIN=/path/to/opencode bun run canary               # host is v2 + matching @opencode/plugin
-OPENCODE_BIN=/path/to/opencode bun run canary --load        # canary plus the headless TUI load harness
-bun run scripts/dev-harness.ts                               # headless server spike (scratch config + repo)
-bun run scripts/dev-harness.ts --tui                         # headless TUI load check (marker file)
-bun run scripts/dev-harness.ts --probe-tui-state             # plugin store + session.context coverage
-SUBPLUG_PROBE_MODEL=provider/model bun run scripts/dev-harness.ts \
-  --probe-tui-state --attach --probe-execute  # one bounded scratch prompt
-SUBPLUG_PROBE_MODEL=provider/model bun run scripts/dev-harness.ts \
-  --probe-tui-state --attach --probe-task     # one task-created child, folded parent check
-SUBPLUG_PROBE_MODEL=provider/model bun run scripts/dev-harness.ts \
-  --probe-tui-state --attach --probe-tools    # ask for one tool call, record its routing
-SUBPLUG_HARNESS_DIR=$TMPDIR/subplug-replay bun run scripts/dev-harness.ts \
-  --probe-tui-state --probe-replay            # late-subscriber replay + restart durability
-SUBPLUG_PROBE_SERVER_URL=http://<server-ip>:4096 OPENCODE_PASSWORD=<password> \
-  SUBPLUG_PROBE_MODEL=provider/model bun run scripts/dev-harness.ts \
-  --probe-tui-state --existing-server --probe-execute
-bun run scripts/dev-harness.ts --demo --keep                 # seed a hub and print TUI launch instructions
-```
-
-The harness resolves the host from `OPENCODE_BIN`, then `opencode2`, then
-`opencode`, so a v1 `opencode` on `PATH` does not shadow the v2 build. Each run
-uses a random port and an isolated XDG tree under
-`${SUBPLUG_HARNESS_DIR:-$TMPDIR/subplug-harness}`, so it never touches your real
-opencode state. `--keep` leaves the scratch dir behind.
-`SUBPLUG_HARNESS_PLUGIN=<dir>` loads that plugin directory instead of the repo,
-which is how the packed artifact is smoke-tested. The workspace lives
-outside the repo on purpose: opencode watches local plugin sources, so state
-writes inside the repo would retrigger plugin reloads.
-
-  `--probe-execute` requires `SUBPLUG_PROBE_MODEL=provider/model` and records
-  prompt admission, execution events, store status transitions, transcript
-  appearance, and cost in a redacted JSON result. `SUBPLUG_PROBE_TIMEOUT_MS`
-  bounds the wait (default 90 seconds). `--existing-server` connects to an
-  already running server, writes only to a fresh client scratch directory,
-  and retains the result path it prints. It creates two named sessions and
-  admits one scratch prompt on that server; execution mode also runs the
-  selected model. It never seeds server workspace files or stops the server.
-  Run that mode on a second device for the V7 two-device acceptance checklist in
-  `V7PLAN.md`; the same-machine `--attach` run is an earlier gate.
-
-  `--probe-task` additionally prompts the root to create one real `task`
-  subagent, then verifies that the child's `parentID` matches the root and that
-  the folded hub node is a `subagent` with a coordination identity. It is
-  model-dependent: a run where the model does not call `task` reports
-  `outcome: incomplete` rather than failing.
-
-The spike seeds a `coordination/claims` registry, starts a throwaway
-`opencode serve` with Basic auth under a scratch config, forces plugin
-activation, creates a session through `/api/session`, and checks the hub
-pointer, `server.start`/`session.created`/`session.identity` records, and the
-active plugin inventory.
-
-### Two-device acceptance (LAN or Tailscale)
-
-`V7PLAN.md`'s V7.R2 checklist needs two machines: a server with a configured
-model, and a client that attaches. The server can be reached over the LAN or an
-encrypted overlay — `<server-ip>` below is either (see Remote attach above).
-With a WSL2 client, run the server on the second device so the client connects
-outbound (WSL2's NAT does not accept inbound LAN connections without host port
-forwarding).
-
-#### Server device setup
-
-The probe requires subplug to be **active on the server**, not just the client
-(`--existing-server` reads `/api/plugin` and fails if the server entry is
-missing). The plugin loader accepts a directory, so install from a clone (the
-repo is public). Use `-b v7-remote` — the default branch is the v1 plugin:
-
-```sh
-npm install -g @opencode/cli          # verified 2.0.20
-git clone -b v7-remote https://github.com/tfisatypedef/subplug.git ~/subplug
-(cd ~/subplug && bun install)         # or npm install
-mkdir -p ~/subplug-server
-cat > ~/subplug-server/opencode.json <<'JSON'
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugins": [{ "package": "/home/<user>/subplug", "options": { "coord": { "injectIdentity": true } } }]
-}
-JSON
-# optional: only needed if you also open a TUI on the server device
-cat > ~/subplug-server/cli.json <<'JSON'
-{
-  "$schema": "https://opencode.ai/v2/cli.json",
-  "plugins": [{ "package": "/home/<user>/subplug", "options": {} }]
-}
-JSON
-```
-
-For a clean evidence trail, pin both sides to the same commit before the run
-(`git -C ~/subplug rev-parse HEAD` should match `git rev-parse HEAD` here);
-otherwise re-pull both. To verify the exact npm artifact instead of a checkout,
-`npm pack`, extract `subplug-0.3.0.tgz`, `npm install` inside it, and point
-`package` at that directory.
-
-`bun install` is required before the plugin can load: the entries import
-`@opencode/plugin` (and the TUI entry `@opencode/plugin/tui`) at runtime, not
-just for types, so the package must be resolvable from the checkout.
-
-Configure a model/provider on the server (e.g. `opencode auth login`), then
-start it. Bind the interface the client will reach and allow inbound TCP 4096
-through the host firewall. Over Tailscale, replace `--hostname 0.0.0.0` with
-`--hostname "$(tailscale ip -4)"` to keep the port off the LAN:
-
-```sh
-OPENCODE_PASSWORD=<password> OPENCODE_CONFIG_DIR=~/subplug-server \
-  opencode serve --hostname 0.0.0.0 --port 4096
-```
-
-Confirm the endpoint from the client before probing (`<server-ip>` is the
-server's LAN or overlay address; see Remote attach above — loopback only works
-on the same machine):
-
-```sh
-curl -u "opencode:<password>" http://<server-ip>:4096/api/info
-```
-
-#### Client device setup
-
-subplug's TUI entry runs on the client and cannot be fetched across the
-network, so the client needs its own copy at the same commit:
-
-```sh
-npm install -g @opencode/cli          # or set OPENCODE_BIN for the probe
-git clone -b v7-remote https://github.com/tfisatypedef/subplug.git ~/subplug
-git -C ~/subplug checkout <commit>    # match `git -C ~/subplug rev-parse HEAD` on the server
-(cd ~/subplug && bun install)         # runtime deps: @opencode/plugin, @opentui/*, solid-js
-```
-
-The probe resolves the host from `OPENCODE_BIN`, then `opencode2`, then
-`opencode`. For the visible pass, load the TUI entry from the client's
-`cli.json` and launch against the server:
-
-```sh
-cat > <client-config-dir>/cli.json <<'JSON'
-{
-  "$schema": "https://opencode.ai/v2/cli.json",
-  "plugins": [{ "package": "/home/<user>/subplug", "options": {} }]
-}
-JSON
-OPENCODE_CONFIG_DIR=<client-config-dir> OPENCODE_PASSWORD=<password> \
-  opencode --server http://<server-ip>:4096
-```
-
-On the client, run the probe against that server twice (execution, then a real
-task child). `SUBPLUG_PROBE_MODEL` names a model configured on the **server**,
-because v2 executes server-side:
-
-```sh
-SUBPLUG_PROBE_SERVER_URL=http://<server-ip>:4096 \
-OPENCODE_PASSWORD=<password> \
-SUBPLUG_PROBE_MODEL=<provider/model> \
-  bun run scripts/dev-harness.ts --probe-tui-state --existing-server --probe-execute
-
-SUBPLUG_PROBE_SERVER_URL=http://<server-ip>:4096 \
-OPENCODE_PASSWORD=<password> \
-SUBPLUG_PROBE_MODEL=<provider/model> \
-  bun run scripts/dev-harness.ts --probe-tui-state --existing-server --probe-task
-```
-
-Each run prints its redacted JSON result path; keep it plus a manual record of
-device OSes, versions, polling interval, outcomes, and limitations. In the
-report, `remote` must be `true`, the store must hydrate, and the bounded
-`events[].at` vs `statuses[].at` timestamps (one client clock) show the busy
-and idle transitions. `--existing-server` writes only to a fresh client scratch
-directory and never touches the server workspace or a local hub. The probe
-covers the state and latency items; the V7.R2 UI items (dashboard/sidebar
-"claims unavailable", transcript navigation, follow-up confirm/queue, toasts,
-disconnect/reconnect) still need the visual pass.
-
-### Publishing
-
-`prepublishOnly` runs `typecheck` + `test`, so a broken tree cannot ship.
-Before publishing, run `bun run canary --load` against the v2 host, bump
-`version` in `package.json`, then `npm publish` (the `files` whitelist ships
-`server.ts`, `tui.tsx`, `src`, `README.md`, and `LICENSE`). CI verifies the
-tarball in the `pack` job and runs `canary --load` against `@opencode/cli@dev`
-in the `canary` job.
-
-Validated release: `0.3.0` against `@opencode/cli` 2.0.20 / `@opencode/plugin`
-2.0.19 (Windows 2026-09-29; Linux WSL2/Ubuntu, Bun 1.3.3, 2026-09-30). To
-smoke-test a packed artifact locally, extract
-the tarball, `bun install` its declared deps, and point the harness at it with
-`SUBPLUG_HARNESS_PLUGIN=<extracted-package-dir>` for the spike and `--tui`.
-
-## Manual verification
-
-### Visual TUI check
-
-```sh
-bun run scripts/dev-harness.ts --demo --keep
-# follow the printed launch instructions, e.g.:
-export OPENCODE_CONFIG_DIR="$TMPDIR/subplug-harness/config"
-opencode "$TMPDIR/subplug-harness/repo"
-```
-
-`--demo` seeds a root session (busy), a subagent (idle), a joined claim, a
-conflict, and a stale risk. In the TUI:
-
-- the sidebar **Agents** slot lists both sessions and the active-claim count;
-- `/subplug` opens the command center: filter tabs with counts, `g` cycles
-  grouping (Project → Status → Agent → Hierarchy), Project nests the subagent
-  under its parent with collapse via `←`/`→` and `b` breaks it back out into a
-  flat list, a per-selection details pane with
-  subtree rollup, joined claims (`⇄ <session>`), and conflict coloring;
-- Enter opens the detail view for a session this instance does not own (as in
-  the demo): breadcrumb, rolled-up subtree cost/counts, a pending **Inbox**
-  (seeded by `--demo`), and a live transcript that updates while the demo
-  subagent runs; `m` opens the composer, which confirms first when the target
-  is busy;
-- in a second terminal run `bun run scripts/dev-harness.ts --poke-risk` to
-  append a live risk and confirm the warning toast + attention sound.
-
-### Real `task` subagent check
-
-With the TUI (or `opencode`) open in the demo repo, prompt:
-
-> Spawn exactly one subagent with the task tool. Ask it to run
-> `node -p "process.env.COORD_AGENT_ID"` through its bash tool and report the
-> output.
-
-The identity now arrives as the `export COORD_AGENT_ID='...'` prefix on `bash`
-tool calls, so the subagent's reported identity should be
-`Harness Agent@<host>/<childID>`. Inspect the hub without leaving the repo:
-
-```sh
-bun run scripts/dev-harness.ts --inspect --expect-subagent
-```
-
-Expected: the root identity is `Harness Agent@<host>/<rootID>`; the child shows
-`parent=<root id>`, `kind=subagent`, and identity
-`Harness Agent@<host>/<childID>`; claims list `⇄ <session>` when the session
-identity matches a claim's agent. `--expect-subagent` prints `PASS` and exits
-non-zero when no such subagent was folded, so the live `task` check is
-scriptable. (The old quota-spending `--probe-task` mode was removed with the v1
-HTTP endpoints.)
+Contributor setup, the dev harness and its probe modes, two-device acceptance,
+publishing, and manual verification live in
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
