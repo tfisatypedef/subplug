@@ -3,22 +3,15 @@ import { messageSummary } from "../hub/comms.ts"
 import { redactText } from "./redact.ts"
 import type { EventRecord, SessionNode, SessionStatus } from "./types.ts"
 
-export type FollowUpRequest = {
+export type FollowUpPrompt = {
   sessionID: string
-  directory?: string
-  messageID: string
-  agent?: string
-  model?: { providerID: string; modelID: string }
-  variant?: string
-  noReply: boolean
-  parts: Array<{ type: "text"; text: string }>
+  text: string
+  delivery: "steer" | "queue"
 }
 
 export type FollowUpTransport = {
-  get: (sessionID: string, directory?: string) => Promise<unknown>
-  status: (directory?: string) => Promise<unknown>
-  prompt: (request: FollowUpRequest) => Promise<unknown>
-  promptAsync: (request: FollowUpRequest) => Promise<unknown>
+  get: (sessionID: string) => Promise<unknown>
+  prompt: (request: FollowUpPrompt) => Promise<unknown>
 }
 
 export class FollowUpConfirmationRequired extends Error {
@@ -50,9 +43,15 @@ export function followUpError(error: unknown): string {
   return redactText(error instanceof Error ? error.message : String(error)).slice(0, 160)
 }
 
-/** Both entrypoints use the native /session APIs; only their argument shapes differ. */
+/**
+ * v1's transport had separate sync/async prompt calls; v2's `session.prompt`
+ * admits durably and schedules asynchronously, so delivery (not the call shape)
+ * decides whether the target resumes now or consumes the message at its next
+ * step boundary.
+ */
 export async function sendFollowUp(input: {
   target: SessionNode
+  status: SessionStatus
   message: string
   from: string
   serverID: string
@@ -64,45 +63,21 @@ export async function sendFollowUp(input: {
   if (!text) throw new Error("follow-up context cannot be empty")
   if (input.target.deleted) throw new Error("target session is deleted")
 
-  // The hub can lag a turn behind. Check the runtime again at send time.
-  const [sessionResponse, statusResponse] = await Promise.all([
-    input.transport.get(input.target.sessionID, input.target.directory),
-    input.transport.status(input.target.directory),
-  ])
-  const native = responseData(sessionResponse)
-  if (!native || typeof native !== "object" || Array.isArray(native)) throw new Error("could not read target session")
-  const agent = "agent" in native && typeof native.agent === "string" ? native.agent : input.target.agent
-  const nativeModel = "model" in native && native.model && typeof native.model === "object" ? native.model : undefined
-  const modelID = nativeModel && ("modelID" in nativeModel ? nativeModel.modelID : "id" in nativeModel ? nativeModel.id : undefined)
-  const model = nativeModel && "providerID" in nativeModel && typeof nativeModel.providerID === "string" && typeof modelID === "string"
-    ? { providerID: nativeModel.providerID, modelID }
-    : undefined
-  const variant = nativeModel && "variant" in nativeModel && typeof nativeModel.variant === "string" && nativeModel.variant !== "default"
-    ? nativeModel.variant
-    : undefined
-  const statuses = responseData(statusResponse)
-  if (!statuses || typeof statuses !== "object" || Array.isArray(statuses)) {
-    throw new Error("could not read session status")
-  }
-  const live = (statuses as Record<string, { type?: string }>)[input.target.sessionID]?.type ?? "idle"
-  const status: SessionStatus = live === "idle" || live === "busy" || live === "retry" ? live : "unknown"
-  const noReply = status !== "idle"
-  if (noReply && !input.confirm) throw new FollowUpConfirmationRequired(status)
+  const noReply = input.status !== "idle"
+  if (noReply && !input.confirm) throw new FollowUpConfirmationRequired(input.status)
 
-  const msgID = messageID()
-  const request: FollowUpRequest = {
-    sessionID: input.target.sessionID,
-    directory: input.target.directory,
-    messageID: msgID,
-    ...(agent ? { agent } : {}),
-    ...(model ? { model } : {}),
-    ...(variant ? { variant } : {}),
-    noReply,
-    parts: [{ type: "text", text }],
+  const native = responseData(await input.transport.get(input.target.sessionID))
+  if (!native || typeof native !== "object" || Array.isArray(native)) {
+    throw new Error("could not read target session")
   }
-  // Queue writes return after persistence. Idle turns use the async endpoint so
-  // an agent calling swarm_send never waits for the recipient's whole response.
-  responseData(await (noReply ? input.transport.prompt(request) : input.transport.promptAsync(request)))
+
+  const admitted = responseData(
+    await input.transport.prompt({ sessionID: input.target.sessionID, text, delivery: noReply ? "queue" : "steer" }),
+  )
+  const nativeID = admitted && typeof admitted === "object" && "id" in admitted && typeof admitted.id === "string"
+    ? admitted.id
+    : undefined
+  const msgID = nativeID || messageID()
   await input.record({
     ts: Date.now(),
     serverID: input.serverID,
@@ -111,5 +86,5 @@ export async function sendFollowUp(input: {
     summary: messageSummary(redactText(text)),
     refs: { msgID, to: input.target.sessionID, from: input.from, kind: "follow-up", delivery: noReply ? "queue" : "prompt" },
   })
-  return { msgID, noReply, status }
+  return { msgID, noReply, status: input.status }
 }

@@ -1,11 +1,12 @@
 /** @jsxImportSource @opentui/solid */
-import { createMemo, createSignal, onCleanup, Show } from "solid-js"
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import { createMemo, createSignal, Show } from "solid-js"
 import type { MonitorState, SessionNode } from "../shared/types.ts"
 import { rollupSubtree } from "../hub/tree.ts"
-import { age, groupColor, groupMark, rollupLabel, sessionLabel, skinOf } from "./presentation.ts"
+import { sessionNeedsInput } from "./data.ts"
+import { age, groupColor, groupMark, rollupLabel, sessionLabel, skinForTheme } from "./presentation.ts"
 import { registerDashboardKeys } from "./dashboard-keys.ts"
 import { DetailsPane } from "./details-pane.tsx"
+import type { TuiContextLike } from "./context.ts"
 import {
   buildCenterRows,
   centerState,
@@ -23,58 +24,7 @@ import {
   type TaskRow,
 } from "./command-center.ts"
 
-const COLLAPSE_KEY = "subplug.collapsed"
-
-function readCollapsed(api: TuiPluginApi): Set<string> {
-  try {
-    const value = api.kv.get<unknown>(COLLAPSE_KEY, [])
-    if (Array.isArray(value)) {
-      return new Set(value.filter((item): item is string => typeof item === "string"))
-    }
-  } catch {
-    // collapse state is a convenience
-  }
-  return new Set()
-}
-
-function writeCollapsed(api: TuiPluginApi, collapsed: ReadonlySet<string>): void {
-  try {
-    api.kv.set(COLLAPSE_KEY, [...collapsed])
-  } catch {
-    // collapse state is a convenience
-  }
-}
-
-function sessionNeedsInput(api: TuiPluginApi, sessionID: string): boolean {
-  try {
-    const store = api.state.session
-    const permission = store.permission?.(sessionID) ?? []
-    const question = store.question?.(sessionID) ?? []
-    return permission.length > 0 || question.length > 0
-  } catch {
-    return false
-  }
-}
-
-const GROUPING_KEY = "subplug.grouping"
-
-function readGrouping(api: TuiPluginApi): Grouping {
-  try {
-    const value = api.kv.get<unknown>(GROUPING_KEY, "project")
-    if (isGrouping(value)) return value
-  } catch {
-    // grouping is a convenience
-  }
-  return "project"
-}
-
-function writeGrouping(api: TuiPluginApi, grouping: Grouping): void {
-  try {
-    api.kv.set(GROUPING_KEY, grouping)
-  } catch {
-    // grouping is a convenience
-  }
-}
+const PREFERENCES_KEY = "preferences"
 
 function padEnd(value: string, width: number): string {
   return value.length >= width ? value.slice(0, width) : `${value}${" ".repeat(width - value.length)}`
@@ -90,7 +40,7 @@ function squish(value: string, width: number): string {
 }
 
 export function Dashboard(props: {
-  api: TuiPluginApi
+  ctx: TuiContextLike
   state: () => MonitorState
   currentSession?: () => string | undefined
   onClose: () => void
@@ -98,30 +48,35 @@ export function Dashboard(props: {
   compose: (sessionID: string, status: SessionNode["status"]) => void
 }) {
   const snapshot = () => props.state()
-  const skin = () => skinOf(props.api)
+  const skin = () => skinForTheme(props.ctx.theme)
   const sessions = () => snapshot().sessions
-  const width = () => props.api.renderer?.width ?? 120
-  const [collapsed, setCollapsed] = createSignal<Set<string>>(readCollapsed(props.api))
+  const width = () => props.ctx.renderer?.width ?? 120
+  const [preferences, updatePreferences] = props.ctx.storage.store(PREFERENCES_KEY, {
+    initial: { collapsed: [] as string[], grouping: "project" as string, flat: false },
+  })
+  const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set(preferences.collapsed))
   const [filterIndex, setFilterIndex] = createSignal(0)
-  const [grouping, setGrouping] = createSignal<Grouping>(readGrouping(props.api))
+  const [grouping, setGrouping] = createSignal<Grouping>(isGrouping(preferences.grouping) ? preferences.grouping : "project")
+  const [flat, setFlat] = createSignal(Boolean(preferences.flat))
   const [selectedTask, setSelectedTask] = createSignal(0)
   const [help, setHelp] = createSignal(false)
   const [search, setSearch] = createSignal("")
 
-  const view = createMemo(() => centerState(sessions(), (id) => sessionNeedsInput(props.api, id), collapsed()))
+  const view = createMemo(() => centerState(sessions(), (id) => sessionNeedsInput(props.ctx, id), collapsed()))
   const counts = createMemo(() => filterCounts(sessions(), view()))
   const listing = createMemo(() =>
     buildCenterRows(sessions(), {
       filter: TASK_FILTERS[filterIndex()]?.group ?? null,
       search: search(),
       grouping: grouping(),
+      flat: flat(),
       state: view(),
     }),
   )
   const rows = () => listing().rows
   const tasks = () => listing().tasks
   const displayIndex = () => selectedDisplayIndex(rows(), selectedTask())
-  const viewport = () => Math.max(3, (props.api.renderer?.height ?? 24) - 9 - (search() ? 1 : 0))
+  const viewport = () => Math.max(3, (props.ctx.renderer?.height ?? 24) - 9 - (search() ? 1 : 0))
   const start = () => clampWindow(rows().length, Math.max(0, displayIndex()), viewport())
   const visible = () => rows().slice(start(), start() + viewport())
   const selected = () => tasks()[clampIndex(selectedTask(), tasks().length)]
@@ -131,6 +86,13 @@ export function Dashboard(props: {
   const showStatus = () => listWidth() >= 56
   const titleWidth = () => Math.max(8, listWidth() - 5 - (showStatus() ? 11 : 0) - 9)
 
+  const persist = (patch: { collapsed?: string[]; grouping?: Grouping; flat?: boolean }): void => {
+    void updatePreferences((draft) => {
+      if (patch.collapsed) draft.collapsed = patch.collapsed
+      if (patch.grouping) draft.grouping = patch.grouping
+      if (patch.flat !== undefined) draft.flat = patch.flat
+    })
+  }
   const move = (delta: number) => {
     const total = tasks().length
     if (!total) return
@@ -145,15 +107,22 @@ export function Dashboard(props: {
     const task = selected()
     if (task) props.openSession(task.session.sessionID)
   }
+  const collapsible = () => grouping() === "hierarchy" || (grouping() === "project" && !flat())
   const setCollapse = (collapse: boolean) => {
-    if (grouping() !== "hierarchy") return
+    if (!collapsible()) return
     const task = selected()
     if (!task || !task.hasChildren) return
     const next = new Set(collapsed())
     if (collapse) next.add(task.session.sessionID)
     else next.delete(task.session.sessionID)
     setCollapsed(next)
-    writeCollapsed(props.api, next)
+    persist({ collapsed: [...next] })
+  }
+  const toggleFlat = () => {
+    const next = !flat()
+    setFlat(next)
+    setSelectedTask(0)
+    persist({ flat: next })
   }
   const cycleFilter = (delta: number) => {
     setFilterIndex((index) => (index + delta + TASK_FILTERS.length) % TASK_FILTERS.length)
@@ -163,30 +132,20 @@ export function Dashboard(props: {
     const next = nextGrouping(grouping())
     setGrouping(next)
     setSelectedTask(0)
-    writeGrouping(props.api, next)
+    persist({ grouping: next })
   }
-  const openSearch = () => {
-    const DialogPrompt = props.api.ui.DialogPrompt
-    if (typeof DialogPrompt !== "function") return
-    props.api.ui.dialog.replace(
-      () => (
-        <DialogPrompt
-          title="Search sessions"
-          placeholder="Title, session id, agent, or directory"
-          value={search()}
-          onConfirm={(value) => {
-            setSearch(value.trim())
-            setSelectedTask(0)
-            props.api.ui.dialog.clear()
-          }}
-          onCancel={() => props.api.ui.dialog.clear()}
-        />
-      ),
-      () => undefined,
-    )
+  const openSearch = async (): Promise<void> => {
+    const value = await props.ctx.ui.dialog.prompt({
+      title: "Search sessions",
+      placeholder: "Title, session id, agent, or directory",
+      value: search(),
+    })
+    if (value === undefined) return
+    setSearch(value.trim())
+    setSelectedTask(0)
   }
 
-  const disposeKeys = registerDashboardKeys(props.api, {
+  registerDashboardKeys(props.ctx, {
     move,
     page: viewport,
     jump,
@@ -194,7 +153,8 @@ export function Dashboard(props: {
     open,
     filter: cycleFilter,
     group: cycleGrouping,
-    search: openSearch,
+    breakAway: toggleFlat,
+    search: () => void openSearch(),
     help: () => setHelp((value) => !value),
     compose: () => {
       const task = selected()
@@ -213,7 +173,6 @@ export function Dashboard(props: {
       props.onClose()
     },
   })
-  onCleanup(disposeKeys)
 
   return (
     <box flexGrow={1} minHeight={0} overflow="hidden" backgroundColor={skin().panel} flexDirection="column">
@@ -232,13 +191,18 @@ export function Dashboard(props: {
           <text flexShrink={0} fg={skin().text}>
             <b>subplug</b>
             <span style={{ fg: skin().muted }}> command center</span>
-            <span style={{ fg: skin().secondary }}>  Group: {groupingLabel(grouping())}  g</span>
+            <span style={{ fg: skin().secondary }}>
+              {"  Group: "}{groupingLabel(grouping())}{grouping() === "project" && flat() ? " · flat" : ""}{"  g"}
+            </span>
           </text>
           <text flexShrink={0} fg={skin().muted}>
-            claims {snapshot().registry.claims.filter((claim) => claim.status === "active").length} active
-            {snapshot().registry.conflicts.length
-              ? ` · ${snapshot().registry.conflicts.length} conflict${snapshot().registry.conflicts.length === 1 ? "" : "s"}`
-              : ""}
+            {snapshot().source === "remote"
+              ? "remote attach · claims unavailable"
+              : `claims ${snapshot().registry.claims.filter((claim) => claim.status === "active").length} active${
+                  snapshot().registry.conflicts.length
+                    ? ` · ${snapshot().registry.conflicts.length} conflict${snapshot().registry.conflicts.length === 1 ? "" : "s"}`
+                    : ""
+                }`}
           </text>
         </box>
 
@@ -271,8 +235,8 @@ export function Dashboard(props: {
             <text flexShrink={0} fg={skin().text}>  ↑/↓ move · pgup/pgdn page · home/end jump</text>
             <text flexShrink={0} fg={skin().text}>  enter open session · f/m follow-up</text>
             <text flexShrink={0} fg={skin().muted}>View</text>
-            <text flexShrink={0} fg={skin().text}>  tab/shift+tab filter · g group · / search · ? help</text>
-            <text flexShrink={0} fg={skin().text}>  ←/→ collapse/expand (hierarchy) · esc/q back</text>
+            <text flexShrink={0} fg={skin().text}>  tab/shift+tab filter · g group · b break away · / search · ? help</text>
+            <text flexShrink={0} fg={skin().text}>  ←/→ collapse/expand (tree or nested project) · esc/q back</text>
           </box>
         ) : (
           <box flexDirection="row" flexGrow={1} minHeight={0} gap={2}>
@@ -339,7 +303,7 @@ export function Dashboard(props: {
             <Show when={wide() && selected()} keyed>
               {(task: TaskRow) => (
                 <DetailsPane
-                  api={props.api}
+                  ctx={props.ctx}
                   state={props.state}
                   session={task.session}
                   group={task.group}
@@ -351,7 +315,7 @@ export function Dashboard(props: {
         )}
 
         <text flexShrink={0} fg={skin().muted}>
-          ↑/↓ move · enter open · tab filter · g group · / search · ? help · f/m follow-up · esc/q back
+          ↑/↓ move · enter open · tab filter · g group · b break away · / search · ? help · f/m follow-up · esc/q back
         </text>
       </box>
     </box>

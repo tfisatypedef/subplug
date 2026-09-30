@@ -1,5 +1,4 @@
 import type { RGBA } from "@opentui/core"
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { ClaimRecord, SessionNode } from "../shared/types.ts"
 import type { SubtreeRollup } from "../hub/tree.ts"
 import { SESSION_STATUS, STATUS_GROUPS, type StatusGroup } from "./command-center.ts"
@@ -17,19 +16,30 @@ export type Skin = {
   secondary: RGBA | string
 }
 
-export function skinOf(api: TuiPluginApi): Skin {
-  const theme = api.theme.current
+export type ThemeLike = {
+  text: {
+    base: RGBA | string
+    muted: RGBA | string
+    action: { primary: { base: RGBA | string }; secondary: { base: RGBA | string } }
+    feedback: Record<"error" | "warning" | "success" | "info", { base: RGBA | string }>
+  }
+  background: { base: RGBA | string; raised: { base: RGBA | string } }
+  border: { base: RGBA | string }
+}
+
+/** Maps the v2 resolved theme tokens onto the dashboard skin. */
+export function skinForTheme(theme: ThemeLike): Skin {
   return {
-    panel: theme.backgroundPanel,
-    border: theme.border,
-    text: theme.text,
-    muted: theme.textMuted,
-    accent: theme.primary,
-    error: theme.error,
-    warning: theme.warning,
-    success: theme.success,
-    selection: theme.backgroundElement ?? theme.backgroundPanel,
-    secondary: theme.secondary ?? theme.textMuted,
+    panel: theme.background.base,
+    border: theme.border.base,
+    text: theme.text.base,
+    muted: theme.text.muted,
+    accent: theme.text.action.primary.base,
+    error: theme.text.feedback.error.base,
+    warning: theme.text.feedback.warning.base,
+    success: theme.text.feedback.success.base,
+    selection: theme.background.raised.base,
+    secondary: theme.text.action.secondary.base,
   }
 }
 

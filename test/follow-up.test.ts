@@ -1,45 +1,68 @@
 import { describe, expect, test } from "bun:test"
-import { FollowUpConfirmationRequired, sendFollowUp, type FollowUpRequest, type FollowUpTransport } from "../src/shared/follow-up.ts"
-import type { EventRecord, SessionNode } from "../src/shared/types.ts"
+import {
+  FollowUpConfirmationRequired,
+  sendFollowUp,
+  type FollowUpPrompt,
+  type FollowUpTransport,
+} from "../src/shared/follow-up.ts"
+import type { EventRecord, SessionNode, SessionStatus } from "../src/shared/types.ts"
 
 const target: SessionNode = {
-  sessionID: "ses_child", parentID: "ses_parent", kind: "subagent", status: "idle", directory: "/tmp/project", lastEventAt: 0,
+  sessionID: "ses_child",
+  parentID: "ses_parent",
+  kind: "subagent",
+  status: "idle",
+  directory: "/tmp/project",
+  lastEventAt: 0,
 }
 
-function setup(status = "idle") {
-  const calls: Array<{ method: string; request: FollowUpRequest }> = []
+function setup(status: SessionStatus = "idle") {
+  const calls: FollowUpPrompt[] = []
   const records: EventRecord[] = []
   const transport: FollowUpTransport = {
-    get: async () => ({ data: { id: target.sessionID } }),
-    status: async () => ({ data: { [target.sessionID]: { type: status } } }),
-    prompt: async (request) => { calls.push({ method: "prompt", request }); return { data: {} } },
-    promptAsync: async (request) => { calls.push({ method: "promptAsync", request }); return { data: undefined } },
+    get: async () => ({ id: target.sessionID }),
+    prompt: async (request) => {
+      calls.push(request)
+      return { id: "msg_host0000000000000000000001" }
+    },
   }
-  const send = (message = "Follow-up context", confirm = false) => sendFollowUp({
-    target, message, from: "user", serverID: "test", confirm, transport, record: (event) => { records.push(event) },
-  })
+  const send = (message = "Follow-up context", confirm = false) =>
+    sendFollowUp({
+      target,
+      status,
+      message,
+      from: "user",
+      serverID: "test",
+      confirm,
+      transport,
+      record: (event) => {
+        records.push(event)
+      },
+    })
   return { calls, records, transport, send }
 }
 
 describe("follow-up delivery", () => {
-  test("resumes an idle subagent without waiting for its response", async () => {
-    const { calls, records, transport, send } = setup()
-    transport.prompt = async () => new Promise(() => {})
+  test("steers an idle target without waiting for its response", async () => {
+    const { calls, records, send } = setup()
     const sent = await send()
     expect(calls).toHaveLength(1)
-    expect(calls[0]).toMatchObject({ method: "promptAsync", request: { sessionID: target.sessionID, directory: target.directory, noReply: false } })
+    expect(calls[0]).toMatchObject({ sessionID: target.sessionID, text: "Follow-up context", delivery: "steer" })
+    expect(sent.noReply).toBe(false)
     expect(records[0]?.refs?.msgID).toBe(sent.msgID)
     expect(records[0]?.refs?.kind).toBe("follow-up")
+    expect(records[0]?.refs?.delivery).toBe("prompt")
   })
 
-  test("checks live status even when the hub says idle, and requires confirmation", async () => {
+  test("requires confirmation for busy targets and queues with confirm", async () => {
     const { calls, records, send } = setup("busy")
     await expect(send()).rejects.toBeInstanceOf(FollowUpConfirmationRequired)
     expect(calls).toHaveLength(0)
     expect(records).toHaveLength(0)
+
     const sent = await send("Use the new fixture", true)
     expect(sent.noReply).toBe(true)
-    expect(calls[0]).toMatchObject({ method: "prompt", request: { noReply: true, parts: [{ type: "text", text: "Use the new fixture" }] } })
+    expect(calls[0]).toMatchObject({ text: "Use the new fixture", delivery: "queue" })
     expect(records[0]?.refs?.delivery).toBe("queue")
   })
 
@@ -49,41 +72,43 @@ describe("follow-up delivery", () => {
     expect((await send("context", true)).noReply).toBe(true)
   })
 
-  test("preserves the subagent's native agent, model and variant", async () => {
-    const { calls, transport, send } = setup()
-    transport.get = async () => ({ data: { id: target.sessionID, agent: "explore", model: { providerID: "test", id: "subagent-model", variant: "high" } } })
-    await send()
-    expect(calls[0]?.request).toMatchObject({ agent: "explore", model: { providerID: "test", modelID: "subagent-model" }, variant: "high" })
-  })
-
-  test("never records a failed SDK write as sent", async () => {
+  test("never records a failed write as sent", async () => {
     const { records, transport, send } = setup()
-    transport.promptAsync = async () => ({ error: { name: "NotFoundError" } })
+    transport.prompt = async () => ({ error: { name: "NotFoundError" } })
     await expect(send()).rejects.toThrow("rejected")
     expect(records).toHaveLength(0)
   })
 
-  test("keeps full context in the native request and only a redacted summary in the hub", async () => {
+  test("only a redacted summary reaches the hub", async () => {
     const { calls, records, send } = setup()
     const text = `token=very-secret\n${"context ".repeat(100)}`
     await send(text)
-    expect(calls[0]?.request.parts[0]?.text).toBe(text.trim())
+    expect(calls[0]?.text).toBe(text.trim())
     expect(JSON.stringify(records)).not.toContain("very-secret")
     expect(records[0]?.summary?.length).toBeLessThanOrEqual(160)
   })
 
-  test("uses native time-ordered message IDs for consecutive follow-ups", async () => {
-    const { send } = setup()
-    const first = await send()
-    const second = await send()
-    expect(first.msgID).toMatch(/^msg_[0-9a-f]{26}$/)
-    expect(second.msgID > first.msgID).toBe(true)
+  test("falls back to a native time-ordered message id", async () => {
+    const { transport, send } = setup()
+    transport.prompt = async () => ({})
+    const sent = await send()
+    expect(sent.msgID).toMatch(/^msg_[0-9a-f]{26}$/)
   })
 
   test("rejects empty context and deleted targets before writing", async () => {
     const { calls, send, transport, records } = setup()
     await expect(send("  ")).rejects.toThrow("empty")
-    await expect(sendFollowUp({ target: { ...target, deleted: true }, message: "context", from: "user", serverID: "test", transport, record: () => {} })).rejects.toThrow("deleted")
+    await expect(
+      sendFollowUp({
+        target: { ...target, deleted: true },
+        status: "idle",
+        message: "context",
+        from: "user",
+        serverID: "test",
+        transport,
+        record: () => {},
+      }),
+    ).rejects.toThrow("deleted")
     expect(calls).toHaveLength(0)
     expect(records).toHaveLength(0)
   })

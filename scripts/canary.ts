@@ -6,9 +6,17 @@ import { resolveOpencodeBin } from "./opencode-bin.ts"
 export type Version = { major: number; minor: number; patch: number }
 
 export function parseVersion(value: string): Version | undefined {
-  const match = value.trim().match(/^(\d+)\.(\d+)\.(\d+)/)
+  const match = value
+    .trim()
+    .replace(/^opencode\s+/i, "")
+    .match(/^v?(\d+)\.(\d+)\.(\d+)/)
   if (!match) return undefined
   return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]) }
+}
+
+/** Nightly/dev hosts report 0.0.0-dev-<n>; they are still v2 line builds. */
+export function isDevHost(value: string): boolean {
+  return /^(?:opencode\s+)?v?0\.0\.0-dev-\d+$/i.test(value.trim())
 }
 
 export function atLeast(version: Version, minimum: Version): boolean {
@@ -41,39 +49,50 @@ function main(): void {
     version?: string
     dependencies?: Record<string, string>
   }
-  const declared = pkg.dependencies?.["@opencode-ai/plugin"]
-  if (!declared) fail("@opencode-ai/plugin is not declared in package.json dependencies")
+  const declared = pkg.dependencies?.["@opencode/plugin"]
+  if (!declared) fail("@opencode/plugin is not declared in package.json dependencies")
 
   let installed = "not installed"
   try {
     const pluginPkg = JSON.parse(
-      readFileSync(join(root, "node_modules", "@opencode-ai", "plugin", "package.json"), "utf8"),
+      readFileSync(join(root, "node_modules", "@opencode", "plugin", "package.json"), "utf8"),
     ) as { version?: string }
     installed = pluginPkg.version ?? installed
   } catch {
-    // the lockfile install is optional; the host check below is authoritative
+    // fall through to the check below
+  }
+  const installedVersion = parseVersion(installed)
+  if (!installedVersion) fail(`@opencode/plugin is not installed (declare ${declared})`)
+  if (installedVersion.major !== 2) {
+    fail(`@opencode/plugin ${installed} is not on the v2 line; this branch targets v2`)
   }
 
   const bin = resolveOpencodeBin()
   const run = spawnSync(bin, ["--version"], { encoding: "utf8" })
   if (run.error) fail(`cannot run ${bin}: ${run.error.message}`)
   if ((run.status ?? 1) !== 0) fail(`${bin} --version exited with ${run.status}`)
-  const host = parseVersion(`${run.stdout ?? ""}`)
-  if (!host) fail(`unparseable version output: ${JSON.stringify(run.stdout)}`)
+  const hostText = `${run.stdout ?? ""}`.trim()
+  const host = parseVersion(hostText)
 
-  const hostText = `${host.major}.${host.minor}.${host.patch}`
-  info(`subplug ${pkg.version ?? "?"}; @opencode-ai/plugin declared ${declared}, installed ${installed}`)
-  info(`opencode ${hostText} at ${bin}`)
+  info(`subplug ${pkg.version ?? "?"}; @opencode/plugin declared ${declared}, installed ${installed}`)
+  info(`opencode ${hostText || "?"} at ${bin}`)
 
-  if (!satisfiesRange(host, declared)) {
-    fail(`opencode ${hostText} does not satisfy ${declared}; update the plugin before shipping`)
-  }
-
-  const installedVersion = parseVersion(installed)
-  if (installedVersion && installedVersion.major === host.major && installedVersion.minor === host.minor) {
-    info("installed plugin API matches the host line")
-  } else if (installedVersion) {
-    info(`warn installed plugin API ${installed} differs from the host line ${hostText}`)
+  if (isDevHost(hostText)) {
+    info("dev host build detected; skipping the release range check")
+  } else {
+    if (!host) fail(`unparseable version output: ${JSON.stringify(hostText)}`)
+    if (host.major < 2) fail(`opencode ${hostText} is not v2; install opencode2 or set OPENCODE_BIN`)
+    if (!satisfiesRange(host, declared)) {
+      fail(`opencode ${hostText} does not satisfy ${declared}; update the plugin before shipping`)
+    }
+    if (installedVersion.major !== host.major) {
+      fail(`@opencode/plugin ${installed} is not on the host line ${host.major}`)
+    }
+    if (installedVersion.minor !== host.minor) {
+      info(`warn installed plugin API ${installed} differs from the host minor ${host.minor}`)
+    } else {
+      info("installed plugin API matches the host line")
+    }
   }
 
   if (process.argv.includes("--load")) {

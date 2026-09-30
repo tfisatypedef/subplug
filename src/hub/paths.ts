@@ -1,3 +1,4 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
@@ -36,4 +37,59 @@ export function isEventsFile(name: string): boolean {
 export function fallbackStateDir(): string {
   const base = process.env.XDG_STATE_HOME?.trim() || join(homedir(), ".local", "state")
   return join(base, "opencode")
+}
+
+export const HUB_POINTER_FILE = "hub.json"
+export const HUB_POINTER_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+
+export type HubPointer = {
+  hubDir: string
+  group?: string
+  at: number
+}
+
+export function hubPointerFile(): string {
+  return join(fallbackStateDir(), "subplug", HUB_POINTER_FILE)
+}
+
+/**
+ * The server plugin and the TUI entry receive plugin options separately, so a
+ * `storageDir` option reaches the server only. The server records the resolved
+ * hub here for the TUI to read.
+ */
+export function writeHubPointer(pointer: HubPointer): void {
+  const file = hubPointerFile()
+  mkdirSync(join(fallbackStateDir(), "subplug"), { recursive: true })
+  writeFileSync(file, `${JSON.stringify(pointer)}\n`, "utf8")
+}
+
+export function readHubPointer(now = Date.now(), maxAgeMs = HUB_POINTER_MAX_AGE_MS): HubPointer | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(readFileSync(hubPointerFile(), "utf8"))
+  } catch {
+    return undefined
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined
+  const record = parsed as Record<string, unknown>
+  if (typeof record.hubDir !== "string" || !record.hubDir) return undefined
+  if (typeof record.at !== "number" || !Number.isFinite(record.at)) return undefined
+  if (maxAgeMs > 0 && now - record.at > maxAgeMs) return undefined
+  return {
+    hubDir: record.hubDir,
+    group: typeof record.group === "string" ? record.group : undefined,
+    at: record.at,
+  }
+}
+
+/**
+ * The pointer file is global while hubs are per group, so a reader must not
+ * trust a pointer written by a server in another project. Accept the pointer
+ * only when it names this reader's group; when the reader cannot resolve a
+ * group, fall back to whatever the last server wrote.
+ */
+export function selectHubDir(input: { stateDir: string; group?: string; pointer?: HubPointer }): string {
+  const { stateDir, group, pointer } = input
+  if (pointer && (!group || pointer.group === group)) return pointer.hubDir
+  return hubRoot(stateDir, group ?? "unknown")
 }

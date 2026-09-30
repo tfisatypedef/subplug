@@ -25,6 +25,583 @@ session. Startup discovers descendants recursively (50 recent starting
 sessions, 200 sessions total), and native `task` metadata updates recover live
 child links, agent names, and models even if creation events were missed.
 
+## OpenCode v2 migration (branch `v2`) — plan
+
+Status: **v2 port complete (V0–V6 done, 2026-09-29); V7 remote attach
+implemented on `v7-remote`; branch ready to merge.** This section describes this
+branch. The v1 sections below describe `main` (the
+shipped 1.18 plugin) and stay as the historical reference. Development ran
+against `@opencode/cli@dev` (`0.0.0-dev-20288`, 2026-09-29) and the release
+host `@opencode/cli` `2.0.20`; see the V0–V6 results sections.
+
+Current status (2026-09-29): the v2 port (V0–V6) and the V7 remote-attach
+feature are implemented. `v7-remote` adds hub-free remote render/actions
+(V7.1–V7.5) plus review fixes (V7.R0) and probes (V7.R1) whose single-machine
+execution and task-child runs pass on `2.0.20`; PLAN R1, R2 and R4 are done.
+Remaining: V7.R2 two-device LAN acceptance (needs a second device), PLAN R3
+visual checks (needs an interactive terminal), and PLAN R5 release
+preparation. See "Current remaining work specification" at the end of this
+file and `V7PLAN.md`.
+
+Scope: port subplug to opencode **2.x only** — server plugin plus CLI/TUI plugin.
+No dual `server()`/`setup()` package; v1 support remains on `main`. Reference
+surface read from the opencode `origin/v2` branch (`7ef4a1a56e`; local worktree)
+and the published `@opencode/plugin@2.0.19`. Runtime under test:
+`@opencode/cli@dev` (the v2 CLI; `opencode-ai` and `@opencode-ai/*` are the v1
+line) with `@opencode/plugin@2.0.19`.
+
+### Verified v2 surface (source of truth for the port)
+
+- Package: `@opencode/plugin@2.0.19`, exports `.` (Promise server), `./tui`
+  (CLI/TUI), `./effect`, `./host`, `./*` (`packages/plugin/package.json:12-18`).
+- Definition: `export default Plugin.define({ id, setup })`; `setup(ctx)` may
+  return a cleanup. The loader requires the default export to be an object with
+  `id` plus `effect` or `setup` (`packages/plugin/src/promise/plugin.ts:56-65`,
+  `packages/core/src/plugin/module.ts:60-116`).
+- Server context domains: `app`, `location`, `options`, `storage`, `agent`,
+  `command`, `event`, `integration`, `mcp`, `model`, `generate`, `permission`,
+  `plugin`, `provider`, `reference`, `rpc`, `session`, `shell`, `skill`, `tool`,
+  `vcs`, `websearch`, `worktree` (`packages/plugin/src/promise/plugin.ts:26-54`).
+  There is **no `ctx.client`** and no `directory`/`worktree`/`$` at the top
+  level; use `ctx.location` and the domain methods.
+- Events: `ctx.event.subscribe({ signal })` yields `OpenCodeEvent` with payloads
+  under `event.data` (`packages/schema/src/session-event.ts`,
+  `packages/schema/src/event-manifest.ts`). Relevant names: `session.created`
+  (carries `parentID`, `projectID`, `title`), `session.deleted`,
+  `session.renamed`, `session.agent.selected`, `session.model.selected`,
+  `session.status` (`data.status`: idle|busy|retry), deprecated `session.idle`,
+  `session.execution.*`, `session.step.*`, `session.text/reasoning/tool.*`,
+  `session.usage.updated`, `session.compaction*`, `session.inbox.*`,
+  `permission.asked/replied`. **Gone:** `session.updated`, `message.updated`,
+  `message.part.updated`, `session.error`, `todo.updated`, `command.executed`
+  (only ephemeral `command.updated` for the command list).
+- Session domain (`packages/plugin/src/promise/session.ts:153-170`): `create`,
+  `get`, `switchAgent`, `switchModel`, `prompt` (`delivery: "steer"|"queue"`),
+  `generate`, `command`, `synthetic`, `interrupt`, `update`, `move`, `wait`,
+  `context`. **No** list, children, status, todo, message-list, or environment.
+- Hooks (`packages/plugin/src/promise/{session,tool,shell,permission}.ts`):
+  `session.hook("prompt"|"context"|"compaction"|"generate"|"title"|
+  "model.request"|"http.*"|"retry")`, `tool.hook("execute.before/after")`,
+  `shell.hook("create.before")`, `permission.hook("evaluate")`. Throwing from
+  `tool.execute.before` denies the call (`packages/core/src/plugin/hooks.ts`).
+- Tools: `ctx.tool.transform(editor => editor.add({ name, description, input,
+  execute }))` with JSON Schema/Standard Schema input and `{ content }` results;
+  `list()`/`reload()`/`registration.dispose()`
+  (`packages/plugin/src/promise/tool.ts`).
+- Shell hook event: `{ command, cwd, timeout, shell, env }` — **no sessionID**
+  (`packages/plugin/src/promise/shell.ts:3-17`;
+  `packages/core/src/shell.ts:256-275`). v2 sets the per-session shell env via
+  `PUT /api/session/:id/environment`
+  (`packages/protocol/src/groups/session.ts:866-884`), reachable from the TUI
+  context's `client` but not from the server context.
+- TUI: `Plugin.define({ id, setup(context) })` from `@opencode/plugin/tui`
+  (`packages/plugin/src/tui/plugin.ts`); context = `options`, `location`,
+  `app`, `renderer`, `client`, `data`, `attention`, `theme`, `themeMode`,
+  `markdown`, `keymap`, `storage`, `ui`
+  (`packages/plugin/src/tui/context.ts:516-532`).
+  - Slots: `app`, `home.footer(.status)`, `prompt.footer(.status|.file)`,
+    `session.composer.top`, `session.panel`, `sidebar.content`, `sidebar.footer`
+    with prepend/append/before/after/replace (`context.ts:191-262`).
+  - Router: `register({ name, render({ data }) })`,
+    `navigate({ type: "plugin"|"session"|"home" })`, `current()`
+    (`context.ts:142-157,468-472`).
+  - Keymap: `layer(() => ({ mode, priority, enabled, target, commands,
+    bindings }))`; commands use `id`/`bind`/`palette`/`slash`/`run`
+    (`context.ts:384-460`). Host keybinds come from `cli.json`.
+  - Dialogs: promise `alert/confirm/prompt/select` plus `show/set/clear`; always
+    modal (`context.ts:327-382`).
+  - Data (reactive Solid stores): `data.session.{list,get,root,family,cost,
+    status,message.list/sync,pending.list/sync,permission.list/sync,form.*}`,
+    `data.project.*`, `data.shell.*`, `data.location.*`, `data.on/listen`
+    (`context.ts:31-140`). Content is embedded in messages; there is no parts
+    API and no todo.
+  - Storage `storage.store/memory(key, { initial })` is per-plugin namespaced
+    (`context.ts:31-53`); theme tokens changed
+    (`packages/theme/src/tui/types.ts`).
+- Loading: server config `plugins: ["pkg" | { package, options }]`
+  (`packages/schema/src/config/plugin.ts:6-14`); directories
+  `.opencode/plugin(s)` and global `plugins/`
+  (`packages/core/src/plugin/source-directory.ts:7`); configured local paths
+  must be directories; server entry `server.ts`/`index.ts`, TUI entry `tui.ts(x)`
+  or package `exports["./tui"]` (`packages/plugin/src/host.ts:17-44`). TUI
+  config is global `cli.json`; the TUI also auto-loads server plugins that
+  expose `./tui` (`packages/tui/src/plugin/context.tsx:99-103,301-305`).
+- CLI: `opencode plugin add|list|check|update|remove`
+  (`packages/cli/src/commands/commands.ts:241-284`). There is no `engines`
+  check in v2; compatibility means depending on the matching `@opencode/plugin`
+  line. `opencode serve` now requires Basic auth (`opencode:<password>`), serves
+  `/api/*`, and takes `--print-logs` plus `OPENCODE_LOG_LEVEL`.
+
+### Server mapping (v1 → v2)
+
+| v1 | v2 |
+| --- | --- |
+| default `{ id, server }` | `Plugin.define({ id: "subplug", setup(ctx) })`; cleanup returned |
+| `input.{ client, project, directory, worktree, $ }` | `ctx.location.{ directory, project }`, `ctx.options`, `ctx.app`; no client or `$` |
+| `event` hook | `for await (const event of ctx.event.subscribe({ signal }))` |
+| `session.created/updated/deleted` | `session.created`, `session.renamed`, `session.metadata.updated`, `session.agent.selected`, `session.model.selected`, `session.deleted` |
+| `session.status/idle/error` | `session.status` (`data.status`), deprecated `session.idle`, `session.execution.failed/succeeded/interrupted` |
+| `todo.updated` | none — drop todos |
+| `message.updated` (cost/agent/model) | `session.usage.updated`, `session.agent.selected`, `session.model.selected` |
+| `message.part.updated` (`task`) | `session.created` (`parentID`) plus `session.tool.called/success/failed` |
+| `command.executed` | none — drop |
+| `chat.message` part injection | `ctx.session.hook("prompt", event => …)` and/or `ctx.session.synthetic` |
+| `tool.execute.before/after` | `ctx.tool.hook("execute.before/after")` |
+| `shell.env` (had `sessionID`) | `ctx.shell.hook("create.before")` — **no sessionID** (see gaps) |
+| `tool()` + zod | `ctx.tool.transform` + JSON Schema, `{ content }` result |
+| `client.session.list/children/status/todo/messages` | `ctx.session.get/context`; status folded from events |
+| `client.session.prompt/promptAsync` | `ctx.session.prompt({ delivery })` |
+| `client.app.log` | console/`process.stderr` (`[subplug]` prefix) |
+| `client.path.get` state dir | XDG-derived state root (`storageDir`/env still win) |
+| `$` git calls | `node:child_process` (or `Bun.$` when present); `ctx.vcs` where it fits |
+| `dispose` hook | cleanup returned from `setup` (abort subscription, stop web, clear timer) |
+
+### TUI mapping (v1 → v2)
+
+| v1 | v2 |
+| --- | --- |
+| `{ id, tui(api, options, meta) }` | `Plugin.define({ id, setup(context) })` from `@opencode/plugin/tui`; no meta |
+| `api.state.session.*`, `api.state.part` | `context.data.session.*`; content inline in messages |
+| `api.state.provider.find` | `context.data.location.provider.list(location)` |
+| `api.state.path.{ state, worktree }` | XDG-derived state root; `context.data.location.default().directory` |
+| `api.client.*` (v1 SDK envelopes) | `context.client.*` (v2 generated client returns data, not `{ data }` wrappers) |
+| `api.event.on` | `context.data.on` (`event.data` payloads) |
+| `api.kv.get/set` | `context.storage.store(key, { initial })` (per-plugin namespace) |
+| `api.ui.toast(x)` | `context.ui.toast.show(x)` |
+| `api.ui.dialog.replace/clear` + `DialogPrompt`/`DialogConfirm` | `context.ui.dialog.prompt/confirm/alert/select` (promise, modal) |
+| `api.route.register/navigate/current` | `context.ui.router.register/navigate/current` |
+| `api.keymap.registerLayer` + `@opentui/keymap/extras` | `context.keymap.layer(...)` (`id`/`bind`/`slash`; host applies cli.json keybinds) |
+| `api.attention.notify` | `context.attention.notify` (async, returns a result) |
+| `api.slots.register({ order, slots })` | `context.ui.slot({ append: "sidebar.content", render })` |
+| `api.theme.current` | `context.theme` (new token names) |
+| `api.renderer` | `context.renderer` |
+| `api.lifecycle.onDispose` | cleanup from `setup` / `onCleanup` in JSX |
+| `tui.json` entry, `--probe-tui-state` | `cli.json` or auto-load via `./tui`; probe rewritten |
+
+### Behavior changes and gaps to resolve
+
+1. **Per-session shell identity.** v2's `create.before` has no `sessionID` and the
+   server context cannot call `session.environment`. Plan: prefix
+   `COORD_AGENT_ID=<identity> ` (properly shell-quoted) onto `bash` commands in
+   `tool.execute.before` so agent-run `coord.py`/git commands resolve to the
+   session identity, and keep recording `session.identity`. Optionally the TUI
+   can push the variable with `context.client.session.environment(...)`, but
+   that PUT replaces the whole session env and is client-side only — probe first.
+2. **No session enumeration.** The v1 baseline import (`session.list` +
+   recursive `children`) has no public v2 server equivalent. Sessions are
+   tracked from `session.created`; previously folded hub records persist and can
+   be revalidated with `ctx.session.get`. TUI can backfill
+   `context.data.session.list()` metadata into the hub.
+3. **Todos are gone.** Remove `todo.updated` handling, todo folding
+   (`TodoSummary`), the `swarm_status` todo fields, and the detail Todos panel.
+4. **Transcript shape changed.** v2 assistant messages embed content
+   (text/reasoning/tool state). Rewrite `src/tui/transcript.ts` and the web
+   transcript against `SessionMessage.Info` and `ctx.session.context`.
+5. **Live-only events.** The plugin event stream does not replay history;
+   startup starts empty and the hub supplies prior state. Keep the fold tolerant
+   of unknown/partial records.
+6. **`swarm_status` messages** move from `session.messages` to
+   `ctx.session.context`.
+7. **Send gating** uses the folded status map (from events) instead of a
+   `session.status` API call.
+8. **Delivery semantics (probed).** Idle targets start a turn when `prompt` is
+   called without `resume: false`; busy targets admit durably and consume the
+   item at the next step boundary (`delivery: "queue"`). `resume: false` admits
+   without scheduling. Map idle → `session.prompt`, busy → `prompt` with
+   `delivery: "queue"` behind the existing confirm.
+9. **State dir.** Drop `client.path.get`; derive
+   `<XDG_STATE_HOME|~/.local/state>/opencode` and honor
+   `storageDir`/`SUBPLUG_STORAGE_DIR` first.
+10. **Web server** stays `Bun.serve` but must be guarded for Node-hosted CLI
+    (`typeof Bun !== "undefined"`).
+11. **Options shape changes.** Keep `coord`, `storageDir`, `hubGroup`, `comms`,
+    `web`; drop `keybinds` (host `cli.json` keybinds take over) and treat
+    `enabled` as deprecated (host `plugin_enabled`/`-id` directives do this).
+12. **Logging** loses `client.app.log`; use prefixed stderr/console.
+13. **Code Mode wraps tools by default.** Registered tools are exposed through
+    the built-in `execute` tool unless `options: { codemode: false }`. Inner
+    calls still fire `tool.hook("execute.before")`/`"execute.after"`, and a
+    denied inner call lands in the outer result's `metadata.toolCalls` and the
+    model-visible text. Decide per tool whether `swarm_status`/`swarm_send` opt
+    out of Code Mode.
+14. **TUI options are separate.** A TUI entry loaded from server inventory gets
+    `ctx.options = {}`; TUI options must come from `cli.json` (or be defaulted
+    by the plugin). Server `opencode.json` options only reach the server entry.
+
+### V0 probe results (2026-09-29, `@opencode/cli@dev` `0.0.0-dev-20288`)
+
+Scratch workspace (not committed): `/tmp/opencode/v2-probe` with isolated
+`XDG_*`, `OPENCODE_CONFIG_DIR`, `OPENCODE_PASSWORD`, a `git init` work dir, a
+probe plugin dir (`server.ts` + `tui.ts` exporting plain `{id, setup}` objects
+with no runtime imports), and the legacy `auth.json` copied into
+`<data>/opencode/auth.json` (v2 imports it on first boot). Confirmed:
+
+- **Loading**: config `plugins: [{ package: "/abs/dir", options }]` loads the
+  server entry from a directory (`server.ts`); activation is lazy (first
+  location use: session create + shell). `/api/plugin` then reports the plugin
+  as `source: { type: "local", path: .../server.ts }` with
+  `features: { server: true, tui: true }` once `tui.ts` exists. Options reached
+  `setup(ctx)` unchanged.
+- **Server context** matches the docs: domains exactly as listed above;
+  `session` methods `hook/create/get/switchAgent/switchModel/prompt/generate/
+  command/synthetic/interrupt/update/move/wait/context` (no list/children/
+  status/todo/environment); `tool` has `list/transform/hook/reload`; `event`
+  has only `subscribe`; `storage` has `get/set/remove/scan`.
+- **Auth/API**: `opencode serve` prints `server listening on ...`; every request
+  needs Basic `opencode:<OPENCODE_PASSWORD>` (401 otherwise). `/api/info`,
+  `/api/config`, `/api/plugin`, `/api/session`, `/api/session/:id/context`,
+  `/api/session/:id/shell`, `/api/session/:id/environment` (PUT),
+  `/api/session/:id/synthetic`, and `/api/session/:id/prompt` all behaved as
+  documented (204s or `{location, data}` JSON envelopes).
+- **Shell hook**: `ctx.shell.hook("create.before")` fires for session shells;
+  `event.env` is the full process env when no session env is set (else the
+  session env), plus `TERM`/`OPENCODE_TERMINAL`, and has **no sessionID or
+  callID**. Mutating `event.env` persists into the shell (verified
+  `PROBE_SHELL_HOOK=1` in output).
+- **Session environment**: `PUT /api/session/:id/environment {variables}`
+  **replaces** the whole env (after the PUT only `variables` plus `TERM`,
+  `OPENCODE_TERMINAL`, `PWD`, `SHLVL`, `_` remained; the process env was gone).
+  There is no GET endpoint and no server-context method; only the TUI client
+  exposes `session.environment`.
+- **Prompts/delivery**: `POST .../prompt` durably admits
+  (`session.inbox.enqueued`) and starts a turn on an idle session; `resume:
+  false` admits without scheduling; `delivery: "queue"` waits for the next step
+  boundary (a queued notice was delivered after a running turn continued and
+  the model saw it). The `session.hook("prompt")` callback receives
+  `{sessionID, messageID, prompt: {text}, delivery}` before admission and can
+  rewrite both. `ctx.session.synthetic` admits a durable synthetic message
+  (`session.inbox.enqueued`, type `synthetic`) that does not appear in
+  `session.context` while pending.
+- **Tools**: `ctx.tool.transform` registrations work; tools are exposed through
+  the built-in Code Mode `execute` tool by default. Inner calls emit
+  `tool.hook("execute.before")` (`{tool, sessionID, agent, messageID, id,
+  input}`) and `execute.after` (`status: "completed"`, `result: {content}`).
+  Throwing in `execute.before` denies the inner call: `execute.after` is
+  skipped, the outer `execute` result's `metadata.toolCalls` records
+  `{tool, status: "error"}`, and the denial text reaches the model.
+- **Events** observed (in-process subscribe, server-wide): startup `*.updated`
+  inventory events; `session.created` (root has no `parentID`);
+  `session.execution.started|interrupted`;
+  `session.step.started|streamed|ended|failed`;
+  `session.text.started|delta|ended`; `session.reasoning.*`;
+  `session.tool.input.started|delta|ended`,
+  `session.tool.called|progress|success|failed` (outer Code Mode call; inner
+  tools appear in `metadata.toolCalls` and hook records);
+  `session.usage.updated`; `session.retry.scheduled`;
+  `session.inbox.enqueued|delivered`; `session.shell.started|ended`;
+  `shell.created|exited`; `session.instructions.updated`; `project.updated`.
+  **Not observed on this build:** `session.status`, `session.idle`,
+  `session.execution.succeeded|failed` (fold busy from
+  `session.execution.started` plus `session.step.*`/inbox events until a
+  release emits them), `todo.updated`, `command.executed`, `message.updated`.
+- **Messages** (`GET /api/session/:id/context`): user
+  `{id, time.created, text, type}`; assistant `{id, time, type, agent, model,
+  content, snapshot, finish, rawFinish, cost, tokens}` with content entries
+  `text`, `reasoning`, and `tool` (`{id, name, executed, state: {status, input,
+  content, metadata}, time: {created, ran, completed}}`). No separate parts
+  endpoint.
+- **TUI**: loaded headlessly via `script -qec` + `--standalone`; the plugin
+  auto-loaded from server inventory (`features.tui`) with `ctx.options = {}`.
+  Context keys and client groups matched the docs; `theme.text.base` and
+  `theme.border.base` are RGBA objects; `themeMode` is `"dark"`.
+  `data.session.list()` was empty at boot even though `client.session.list()`
+  returned all sessions — per-session `sync()` is required, so the hub remains
+  the dashboard's source of truth.
+- **Model runs**: free `opencode` Zen models with tools work
+  (`nemotron-3-ultra-free` completed a turn with tool calls; 503 retries appear
+  as `session.retry.scheduled`). One longcat turn hung and one dev-build server
+  died after a forced interrupt; treat the dev binary as unstable.
+
+Recipe for V5: `npm i @opencode/cli@dev`, serve with the env above, Basic auth
+`opencode:$OPENCODE_PASSWORD`, readiness `GET /api/info`, sessions via
+`POST /api/session`, shells via `POST /api/session/:id/shell`.
+
+### Packaging and entrypoints
+
+- `package.json`: dependency `@opencode/plugin: ^2.0.19`; remove
+  `@opencode-ai/plugin`/`@opencode-ai/sdk`; peer-depend on `@opentui/core`,
+  `@opentui/solid` (`>=0.5.12`) and `solid-js`; drop `@opentui/keymap`;
+  `engines.opencode: ">=2"` (documentation only; v2 does not enforce it).
+- `exports`: `"."` → server module, `"./tui"` → TUI module.
+- Add thin root entry files `server.ts` and `tui.tsx` re-exporting
+  `src/server/index.ts` / `src/tui/index.tsx` so the repo root is directly
+  usable as a local directory plugin (v2 local paths must be directories);
+  package installs resolve `"."`/`"./tui"`.
+- Keep shipping TypeScript source and the JSONL hub format; add a build step
+  only if the Node-hosted CLI must load the package.
+
+### Phases
+
+- **V0 — surface probe (done 2026-09-29; results above).** Scratch v2 run with
+  `@opencode/cli@dev` under isolated XDG + `OPENCODE_CONFIG_DIR`, password set,
+  Basic auth; a probe plugin directory (`server.ts` + `tui.tsx`) that records:
+  module/options shape, event names and payloads, tool registration/execution,
+  `execute.before` denial, prompt `delivery` behavior, shell env contents,
+  `session.environment` PUT behavior from the TUI client, `data.session`/
+  `message` shapes, storage behavior. *Accept:* findings written into this
+  section; harness can boot v2 headlessly and observe a marker.
+- **V1 — server shell + hub tap (done 2026-09-29; see "V1 results").**
+  `Plugin.define` setup, options, XDG state dir, hub/EventLog reuse, event
+  mapping (created/renamed/selected/status/usage/deleted), identity recording,
+  cleanup. *Accept:* unit tests drive `setup` with a fake context and fold the
+  same `EventRecord` kinds.
+- **V2 — server tools + comms + leases (done 2026-09-29; see "V2 results").**
+  `swarm_status`/`swarm_send` via `tool.transform`; `ctx.session.context`
+  transcripts; inbox injection via the prompt hook; `delivery`-based sends;
+  lease denial via `tool.hook`; coverage risk via child_process git; shell
+  identity prefix. *Accept:* tool tests and lease-enforcement tests ported;
+  empty inbox is a strict no-op.
+- **V3 — TUI data layer (done 2026-09-29; see "V3 results").**
+  `context.data` session/status/messages, storage, claim/hub reads; rewrite
+  transcript, command-center, presentation for v2 types. *Accept:* pure-helper
+  and fake-context tests pass.
+- **V4 — TUI UI (done 2026-09-29; see "V4 results").** Sidebar slot, routes,
+  keymap layers, promise dialogs, toasts/attention, theme tokens, follow-up
+  composer, navigation/back-stack. *Accept:* `testRender` tests against a fake
+  v2 context; visual check on the v2 CLI.
+- **V5 — web view, harness, canary (done 2026-09-29; see "V5 results").**
+  Web transcripts through `ctx.session.context`; harness v2 config (`plugins`
+  object entries, local dir package, `cli.json` if needed), auth, `/api/*`
+  readiness; canary asserts host major >= 2 and matching `@opencode/plugin`
+  line; rewrite `scripts/probe-tui-state.ts`. *Accept:* `bun run canary --load`
+  passes against the v2 binary.
+- **V6 — docs + release (done 2026-09-29; see "V6 results").** README/PLAN
+  updates (v2-only install, dropped todos, new options), version `0.2.0`, CI
+  installs `@opencode/cli@dev`. *Accept:* `bun test`, `bun run typecheck`,
+  canary, and the manual visual checks documented in README.
+
+### V1 results (2026-09-29)
+
+- The v2 shell lives in `src/server/v2.ts` while the v1 entry stays at
+  `src/server/index.ts`; V2 ports tools/comms/leases into the v2 module, then
+  renames it to `index.ts` and retires the v1 file/tests. This keeps `bun test`
+  green across the port.
+- `Plugin.define({ id: "subplug", setup })` with a structural `ServerContext`
+  so tests drive `setupServer(fakeCtx)`; the real `Plugin.Context` is cast once
+  in the adapter. `@opencode/plugin: ^2.0.19` is now a dependency.
+- Options keep the v1 shape minus `keybinds`/`enabled`; state dir is
+  synchronous (`storageDir` → `SUBPLUG_STORAGE_DIR` → XDG) because v2 has no
+  `client.path.get`.
+- Event mapping keeps the v1 `EventRecord` kinds: `session.created`,
+  `session.renamed`→`session.updated`, `session.agent.selected`→`session.agent`,
+  `session.model.selected`→`session.model`, `session.usage.updated`→
+  `session.updated` (cost), `session.deleted`, `session.execution.started`→
+  `session.status busy`, `succeeded|interrupted`→`session.idle`,
+  `failed|step.failed`→`session.error`, `retry.scheduled`→`session.status retry`,
+  plus the host's `session.status`/`session.idle` when present. The hub fold is
+  unchanged.
+- Identity recording moved from `shell.env` (no sessionID in v2) to
+  `session.created`/first status per session, using each session's own
+  directory; git `user.name` is read with `spawnSync` instead of the host shell.
+- Baseline import is dropped: v2's server context cannot enumerate sessions
+  (`list`/`children`/`status` are gone), so hub recovery relies on the shared
+  event log and snapshot. TUI-side history (V3) can supplement.
+- New `test/server-v2.test.ts` (10 tests) covers options, all mappings, the
+  tap lifecycle/cleanup, hubGroup, XDG fallback, and identity. The v1 tests
+  still pass; web view and tools/comms/leases remain v1 until V2/V5.
+
+### V2 results (2026-09-29)
+
+- The v1 server entry is retired: `src/server/index.ts` is now the full v2
+  server (`Plugin.define`, event tap, tools, comms, leases) and root
+  `server.ts` re-exports it. `src/server/render.ts` holds the pure renderers
+  (`renderStatus`/`renderStatusTree`/`renderSessionDetail`); `web.ts` is
+  untouched until V5.
+- Tools register with `ctx.tool.transform((editor) => editor.add({...}))` using
+  plain JSON Schema inputs (no zod dependency) and return `{ content, metadata }`.
+  `swarm_status` reads transcripts through `ctx.session.context` (assistant
+  content entries summarized as text + `[tool name status]`) and falls back to
+  `ctx.session.get` when the hub does not know a ref.
+- `swarm_send` resolves status from the folded hub and passes it to the new
+  `sendFollowUp`: idle → `ctx.session.prompt` with `delivery: "steer"`, busy →
+  `delivery: "queue"` behind `confirm`; the pointer records the host-assigned
+  inbox id returned by `prompt`. Agent/model/variant preservation was v1 SDK
+  behavior and is dropped (the host keeps them on the session).
+- Inbox injection moved to `ctx.session.hook("prompt")` rewriting
+  `prompt.text` (block appended); delivered markers are appended in the same
+  hook. Empty inbox stays a strict no-op.
+- Lease enforcement runs in `ctx.tool.hook("execute.before")` outside the
+  monitoring catch, so denials still throw. Coverage risk and staged-path
+  reads use `spawnSync` git instead of `Bun.$`; bash commands get a
+  `COORD_AGENT_ID='...'` prefix from the same hook (v2's shell hook has no
+  sessionID), with `session.identity` recorded on injection.
+- The v1 TUI's follow-up composer still speaks the old transport; it now uses
+  `src/shared/follow-up-legacy.ts` (deleted in V4) while `src/shared/follow-up.ts`
+  is v2-only.
+- Tests: `test/server.test.ts`, `test/lease-enforcement.test.ts`, and
+  `test/follow-up.test.ts` were ported to the fake v2 context
+  (`test/v2-context.ts`), which records tools/hooks and drives a controllable
+  event stream. 166 tests pass, `tsc --noEmit` clean.
+- Live smoke (isolated XDG + dev binary, repo loaded as a directory plugin):
+  plugin activates from `/home/flub/subplug/server.ts` with
+  `features: {server: true}`; options reach setup; live events land in the hub.
+  **Gap found:** a session created concurrently with plugin activation is
+  missed (no `session.created`). Since v2 has no server-side session listing,
+  V3/V4 should backfill unknown sessions from the TUI client's
+  `session.list()` into the hub (same pattern as the v1 baseline import).
+
+### V3 results (2026-09-29)
+
+- `src/shared/transcript.ts` gains `buildTranscriptRowsV2(messages, options)`:
+  v2 assistant messages embed `content` entries (text/reasoning/tool) with
+  `state.status` streaming|running|completed|error, `state.content` text blocks,
+  and `time {created, ran, completed}`; user/synthetic/system/skill turns are a
+  single text; compaction/retry/step rows come from the message itself. The v1
+  parts builder is untouched until V4.
+- `src/tui/data.ts` is the v2 data layer with structural types: store-first
+  `loadTranscriptV2` (calls `data.session.message.sync`, falls back to
+  `client.session.context`), `loadSessionDetailV2` (rows, max input+cache-read
+  tokens, summed cost, `data.location.model.list()` context limit),
+  `listNativeSessions`, `sessionNeedsInput` (permission/form lists), and
+  `backfillSessions` — the TUI writes `session.created` records for native
+  sessions missing from the hub, closing the activation-window gap found in V2.
+- `src/tui/presentation.ts` gains `skinForTheme(theme)` mapping resolved v2
+  tokens (`text.base/muted`, `text.action.primary`, `text.feedback.*`,
+  `background.base/raised.base`, `border.base`) onto the existing `Skin`.
+- Tests: `test/transcript-v2.test.ts` (6 cases) and `test/tui-data.test.ts`
+  (5 cases: store/client/none, usage, needs-input, list unwrapping, backfill)
+  plus a skin mapping case in `test/presentation.test.ts`. 179 tests pass,
+  `tsc --noEmit` clean.
+- V4 wiring: the dashboard/sidebar/detail move to `skinForTheme`,
+  `loadSessionDetailV2`, `sessionNeedsInput`, `ctx.storage.store` for collapse/
+  grouping, `ctx.ui.slot` claims, promise dialogs, `data.session.status()`, and
+  hub backfill at startup; then the v1 TUI modules and
+  `src/shared/follow-up-legacy.ts` are deleted.
+
+### V4 results (2026-09-29)
+
+- `src/tui/index.tsx` is now the v2 TUI entry (`Plugin.define({ id, setup })`)
+  and root `tui.tsx` re-exports it, so the repo is directly loadable as a local
+  v2 plugin for both entries.
+- Ported UI: `Dashboard`/`SessionDetail`/`Sidebar`/`DetailsPane` take the
+  structural `TuiContextLike` (`src/tui/context.ts`); the skin comes from
+  `skinForTheme`; collapse/grouping persist through `ctx.storage.store`
+  (`preferences` key — the v1 `kv` API is gone); search and busy-target
+  confirmation use `ctx.ui.dialog.prompt/confirm`; toasts use
+  `ctx.ui.toast.show`; routes are registered with arbitrary names and
+  navigation uses `{type:"plugin", name, data}` / native `{type:"session"}`.
+- Keymap: `ctx.keymap.layer` requires a component owner, so the global
+  Ctrl+Alt+A / `/subplug` command lives in a headless `GlobalKeys` component
+  claimed at the `app` slot; dashboard keys register inside `Dashboard` with
+  `id`+`bind` commands (the v1 `@opentui/keymap` lookup is gone).
+- Composer uses the v2 `sendFollowUp` directly (`steer` when idle, `queue`
+  behind the promise confirm when busy), records the pointer with the host
+  inbox id and removes `follow-up-legacy.ts`.
+- Deleted v1 modules: `src/tui/transcript.ts`, `src/shared/follow-up-legacy.ts`,
+  the v1 parts builder in `src/shared/transcript.ts`, and
+  `test/transcript.test.ts`. `test/tui.test.tsx` was rewritten against the
+  fake v2 context: layout/theme/marquee/details tests stay, commands are driven
+  through the captured keymap layer (host dialog keyboard isolation is now the
+  host's job), and the navigator tests call the function directly.
+- Added the hub pointer bridge: the server writes
+  `<XDG_STATE_HOME|~/.local/state>/opencode/subplug/hub.json` with the resolved
+  hub, and the TUI reads it when it has no explicit `storageDir`. This fixes
+  the mismatch found live: plugin options reach the server entry but not the
+  TUI entry, so a `storageDir` option otherwise split them across hubs.
+- Live check (isolated XDG, dev binary): TUI loaded from
+  `/home/flub/subplug/tui.tsx`, `setup` completed in ~5ms, zero errors, marker
+  written, hub pointer resolved to the server's storageDir hub. 166 tests
+  pass, `tsc --noEmit` clean.
+- Remaining: sidebar slot ordering after built-ins is still only `append`
+  (unverified visually); `@opencode-ai/*`/`@opentui/keymap` dependencies and
+  `exports`/`engines` are finalized in V6.
+
+### V5 results (2026-09-29)
+
+- Web view is wired into the server again: when `web.enabled`, the plugin
+  starts the same `Bun.serve` dashboard with `readMonitorState` and a
+  transcript built from `ctx.session.context` (summarized via
+  `summarizeContextMessage`); unknown sessions 404 through
+  `ctx.session.get`. `startWebServer` now returns a clear error when
+  `typeof Bun === "undefined"` (Node-hosted CLI), and logging uses prefixed
+  stderr. `test/server.test.ts` covers the transcript route end to end.
+- Canary targets v2: it requires `@opencode/plugin` (major 2) installed,
+  accepts release hosts with major >= 2 that satisfy the declared range, and
+  detects `0.0.0-dev-*` nightlies so `--load` works against the dev binary.
+  `resolveOpencodeBin` prefers `opencode2` (or `OPENCODE_BIN`) so a v1
+  `opencode` on PATH no longer shadows the v2 host.
+- Harness rewritten for v2: config uses `plugins` object entries pointing at
+  the repo directory, `cli.json` carries the TUI-side entry (including
+  `storageDir`, which `opencode.json` options do not propagate), `serve`
+  requires Basic auth (`OPENCODE_PASSWORD`), readiness is `GET /api/info`,
+  sessions come from `POST /api/session`, and the spike verifies the hub
+  pointer, `server.start`/`session.created`/`session.identity` records, and an
+  active inventory entry. Plugin activation is forced by polling
+  `/api/plugin` before creating sessions (lazy activation otherwise races the
+  first `session.created`).
+- The harness workspace moved out of the repo (`SUBPLUG_HARNESS_DIR`,
+  defaulting to `$TMPDIR/subplug-harness`): v2 watches local plugin sources,
+  so state writes inside the repo retriggered plugin reloads.
+- `scripts/probe-tui-state.ts` became the directory plugin
+  `scripts/probe-tui-state/tui.ts` (v2 `Plugin.define`), recording session
+  store sync, prompt admission id, and `ctx.session.context` counts. It runs
+  through the new `--probe-tui-state` harness mode.
+- Dropped the v1-only harness probes (`--probe-comms`, `--probe-inject`,
+  `--probe-task`) since their endpoints no longer exist; `--demo`,
+  `--poke-risk`, `--inspect`, `--tui` stay.
+- Verified live against `0.0.0-dev-20288`: `bun run canary --load` OK, harness
+  spike OK, TUI state probe OK (store sync + admitted id), 168 tests pass,
+  `tsc --noEmit` clean.
+
+### V6 results (2026-09-29)
+
+- `package.json` is v2-only: version `0.2.0`; dependency `@opencode/plugin
+  ^2.0.19`; `@opencode-ai/plugin`/`@opencode-ai/sdk`/`@opentui/keymap` removed
+  from deps/peers/devDeps (lockfile has no references); peers
+  `@opentui/core`/`@opentui/solid` `>=0.5.12` plus `solid-js >=1.9`;
+  `engines.opencode: ">=2"`; exports `.`, `./server`, `./tui`; `files` ships
+  `server.ts` and `tui.tsx` alongside `src`.
+- README rewritten for v2: install via `opencode plugin add` / `plugins`
+  entries + `cli.json` for TUI options, the new options table (no
+  `keybinds`/`command`/`enabled`; hub pointer note), bash-prefix identity,
+  dropped todos/baseline (TUI backfill), prompt-hook comms injection, web view
+  guard, v2 development commands (`OPENCODE_BIN`, harness dir outside the
+  repo), publishing, and manual verification.
+- CI updates: the canary job installs `@opencode/cli@dev`; the pack job also
+  asserts `server.ts` and `tui.tsx` are in the tarball.
+- Final checks: `bun run typecheck`, `bun test` (168), `bun run canary --load`
+  against `0.0.0-dev-20288`, harness spike, and the TUI state probe all pass.
+  The branch is committed as a single v2 port commit.
+
+### Test strategy
+
+- Pure logic (hub append/fold/rotate, coord reader/conflicts, redaction, tree,
+  command-center, presentation) stays unit-tested; port signatures only.
+- Server tests call `setup(ctx)` with a fake v2 context (domains as fakes plus
+  an event async iterable and a tool editor recorder) instead of the v1 `Hooks`
+  object; keep the existing coverage matrix (identity, coverage risk, leases,
+  inbox dedupe, baseline behavior).
+- TUI tests fake the v2 `Context` (data stores, keymap, router, dialogs,
+  storage, theme) and keep `testRender` layout assertions.
+- Add mapping-table tests for the event → `EventRecord` translation, and a probe
+  script for anything only provable live (delivery semantics, shell env, durable
+  replay).
+- Harness stays isolated: random port, XDG state/data/cache, `OPENCODE_CONFIG_DIR`,
+  password + Basic auth, kill process group.
+
+### Open questions (remaining)
+
+1. ~~Whether durable events replay to a plugin that subscribes after they were
+   published.~~ **Resolved (R2, `2.0.20`): no replay.** A late subscriber
+   received no pre-existing session events while a live event in the same
+   window arrived; recovery is the hub log plus TUI backfill.
+2. ~~Node-hosted CLI plugin loading (precompiled) versus shipping TS source.~~
+   **Resolved (R4, `2.0.20`): no Node host exists.** The CLI ships a compiled
+   per-platform binary that runs plugins under embedded Bun, so TS source
+   exports are retained (Bun-only boundary documented in README).
+3. ~~Direct (non-Code-Mode) `session.tool.called` shape and the `task` subagent
+   input.~~ **Resolved (R1):** `--probe-task` confirmed a real task child emits
+   `session.created` with `parentID` and `agent` and folds as a `subagent` with
+   a distinct identity; `--probe-tools` showed the tool event carries no tool
+   name and that the model invoked a direct named `swarm_status` entry with no
+   `execute` Code Mode wrapper.
+4. Sidebar slot ordering/placement after built-ins: the plugin uses `append`
+   to `sidebar.content`; `before`/`after`/`prepend` were not compared visually.
+5. ~~Which release emits `session.status`/`session.execution.succeeded`.~~
+   **Resolved (R1, `2.0.20`):** `session.execution.started/succeeded` fire and
+   `session.status`/`session.idle` do not, so status folding correctly keys off
+   `session.execution.*` with the host events as a bonus if present.
+
 ## Locked decisions
 
 - **API**: v1 server hooks + v1 TUI plugin. `@opencode-ai/plugin` depends on
@@ -576,3 +1153,220 @@ dead, so a competitor replaces the lease instead of being denied.
 > keep comms queue-only/addressed with metadata-only hub pointers. Harness
 > gotcha: random port, kill stale listeners; a zombie serve answers with stale
 > code.
+
+## Current remaining work specification (2026-09-29)
+
+This section supersedes the historical v1 "remaining" and handoff notes for
+the current `v7-remote` checkout. The v2 port and V7 feature implementation
+are present. V7 execution/LAN acceptance is specified in `V7PLAN.md` under
+"Remaining work specification"; its single-machine execution and task-child
+runs pass; a real two-device run over Tailscale has since passed the probe
+items (detection, execution, task-child, latency) and found two remote fixes,
+with the visible UI checks still pending. R0/R1 review fixes and
+probe work are committed on `v7-remote`; the suite passes 190 tests and
+`bun run typecheck` is clean.
+
+Linux baseline (WSL2/Ubuntu, 2026-09-30, Bun 1.3.3, opencode 2.0.20,
+`@opencode/plugin` 2.0.19): `bun install --frozen-lockfile`,
+`bun run typecheck`, `bun test`, `canary --load`, the local `npm
+pack` whitelist, and the harness matrix (spike, `--tui`, `--probe-tui-state`,
+`--probe-tui-state --attach`, `--probe-replay`, `--demo --keep`, `--inspect`)
+all pass. Two cold-start probe timing races (late-subscriber live delivery and
+attach message-store hydration) were hardened by `8e875bf`; no shipped code
+changed. A real two-device attach (Windows host over Tailscale, Linux/WSL
+client) then found a remote rendering bug: the dashboard enumerated only the
+reactive store, so pre-existing server sessions were invisible. Remote
+enumeration now uses `client.session.list()` with the store as fallback
+(`b94919b`), covered by two remote tests; the suite is 190.
+
+### R1 — live v2 event and subagent contract
+
+Resolve open questions 3 and 5 using the execution-capable V7 probe and one
+real task-created child. Record the installed host and plugin versions.
+
+- [x] Capture the event types and relevant field shapes for execution start,
+  successful completion, interruption, failure, retry, and task creation.
+  Exercise optional/failure paths only where the installed host supports
+  them; report unsupported paths explicitly. Evidence (opencode `2.0.20`,
+  plugin `0.2.0`, `opencode/nemotron-3.5-lightning-free`): `session.created`
+  carries `parentID`+`agent` for a task child (roots omit `parentID`);
+  `session.execution.started`/`succeeded`, `session.inbox.enqueued/delivered`,
+  `session.step.started/ended`, `session.usage.updated` all fire.
+  `session.status` and `session.idle` did **not** fire on this host, so the
+  `session.execution.*` fallback in `recordFor` is the working path.
+  Interruption/failure/retry were not exercised (optional path; not reported
+  as supported).
+- [x] Compare emitted records with `recordFor` and the TUI notification
+  subscriptions. Verify a successful run ends idle, a failed run does not
+  remain busy, and child `parentID`, agent/model when supplied, and distinct
+  coordination identity survive folding. Evidence: `--probe-execute` saw busy
+  then idle with an assistant transcript; `--probe-task` folded the child as
+  `kind: subagent` with `parentID` = root, `agent: general`, `model`, and a
+  distinct `Harness Agent@<host>/<sessionID>` identity. No mapping fix was
+  needed; the existing `recordFor`/`foldSessions` coverage already matches.
+  A failed run was not exercised.
+- [x] Verify both direct tools and Code Mode where available; document which
+  path ran. Restore a bounded v2 `--probe-task` only if automation is useful;
+  do not reuse the removed v1 HTTP endpoints. `--probe-task` is restored as an
+  opt-in mode that prompts the root to create one real `task` subagent and
+  checks the folded parent link. `--probe-tools` asks the model to call
+  `swarm_status` once. Observed on `2.0.20`: the assistant content records a
+  direct `swarm_status` tool entry — no `execute` Code Mode wrapper entry — and
+  `session.tool.called`/`failed`/`success` events carry no tool name
+  (`assistantMessageID`, `executed`, `id`, `input`, and `error` on failure), so
+  the routing is read from the message, not the event. The scratch call errored,
+  which does not affect the routing observation.
+
+Acceptance: redacted event-shape evidence, a correct folded root/child state,
+and regression tests for any mapping fix. Avoid committing full transcripts
+or credentials. Reuse the V7 run where it supplies the same evidence.
+Met on opencode `2.0.20` (Windows, 2026-09-29); tool routing is recorded above
+as a direct named tool with no Code Mode wrapper observed.
+
+### R2 — durable replay and recovery contract
+
+Resolve open question 1 without assuming that subscribing replays history.
+
+- [x] In an isolated workspace, create a root/child and emit events before
+  loading a probe subscriber. Compare what the late subscriber receives with
+  what a subscriber established before the run receives. `--probe-replay`
+  (fresh `SUBPLUG_HARNESS_DIR`) published two sessions, then attached a late
+  subscriber: no pre-existing events arrived, while a live session created
+  during the same window did. The TUI store also started cold (`sessionCount`
+  0 for pre-existing sessions) until backfill runs.
+- [x] Restart with the existing hub, then with an empty hub. Check server
+  tool visibility separately from TUI backfill, including parent links and
+  status. Identify which metadata is durable and which must be read live. The
+  restart leg retained the hub JSONL (7 records, 3 `session.created`) and
+  re-registered the tools (`features.server: true`, `state: active`) against
+  the existing hub. The empty-hub path is the ordinary cold start; the
+  activation-window gap is closed by TUI backfill. Status/cost/messages are
+  live reads, not hub state.
+- [x] Document the observed recovery guarantee. If acceptance requires more
+  recovery than the host provides, specify and implement a bounded native
+  session import through verified v2 APIs; do not rely on replay accidentally
+  observed in one development build. The guarantee is documented in README
+  under "Recovery contract". No new import was added: the existing TUI
+  backfill (`client.session.list()` → missing `session.created` records)
+  already covers the only recovery the host cannot do server-side, and the
+  server context still has no session-listing API.
+
+Acceptance: a reproducible restart matrix and an explicit recovery contract
+in README. Any added import has limits, no duplicate records, and tests for
+missing/deleted sessions and failing native lookups.
+Met on opencode `2.0.20` (Windows, 2026-09-29): `--probe-replay` is the
+reproducible matrix; `test/tui-data.test.ts` covers malformed rows, known and
+deleted sessions (no duplicates, no resurrection), an empty native list, and a
+failing native lookup. No import was added, so no new import limits apply.
+
+### R3 — visual v2 acceptance
+
+Resolve open question 4 and the outstanding visual checks on the current
+v2 host, rather than relying on the historical v1 screenshots.
+
+- [ ] Use `--demo --keep` and README's visual checklist to verify sidebar
+  placement, task selection, tabs/search/grouping, hierarchy expansion,
+  detail navigation/back, scrolling, claims/conflicts, and follow-up dialogs.
+- [ ] Check normal and narrow terminals, including a short terminal; controls
+  and selected rows must remain usable without text overlap.
+- [ ] Compare slot placement options only if the current appended sidebar
+  is obstructed or confusing; retain the current placement when it passes.
+- [ ] Verify risk/error/completion toast and attention behavior against live
+  events; synthetic demo evidence alone does not prove host event delivery.
+
+Acceptance: dated screenshots or a short recording and a concise checklist
+with host version and terminal dimensions. Report platform-specific issues.
+The remote variants are covered by V7.R2 rather than a duplicate run.
+
+### R4 — Node-host compatibility decision
+
+Open question 2 is a compatibility investigation, not an automatic build-system
+change. The package currently ships TypeScript source for the verified host.
+
+- [x] Identify a supported Node-hosted v2 distribution before adding it to the
+  compatibility matrix. Install the packed artifact into that host and check
+  server/TUI entrypoints, cleanup, and optional renderer peers. None exists:
+  `@opencode/cli@2.0.20` declares `bin.opencode`/`bin.opencode2` as
+  `./bin/opencode.exe` (a ~206 MB compiled binary) with per-platform
+  `@opencode/cli-<os>-<arch>` optional dependencies; `postinstall.mjs` only
+  selects the platform binary. The host runs plugins under its embedded Bun
+  runtime, so there is no Node host to install into.
+- [x] If that supported host cannot load the source, specify a compiled export
+  strategy and test the packed artifact against both distributions. Otherwise
+  retain source exports and document the verified runtime. Retained: source
+  exports, no compilation pipeline. `bun pm pack --dry-run` packs 35 files
+  including `server.ts`, `tui.tsx`, and `src/**` (TS source, no build output);
+  README documents the Bun-only boundary. The web view's `typeof Bun ===
+  "undefined"` guard (`src/server/web.ts:82`) already returns its clear
+  unavailable message.
+
+Acceptance: either evidence for supported Node loading or a documented Bun-only
+support boundary. The optional web view must give its existing clear unavailable
+message where `Bun.serve` is absent. Do not add a compilation pipeline merely to
+close a speculative question.
+Met on opencode `2.0.20` (Windows, 2026-09-29): Bun-only boundary documented in
+README; no pipeline added; the web guard is unchanged and still covered by
+`test/web.test.ts`.
+
+### R5 — documentation reconciliation and release
+
+- [x] Add a current-status summary pointing to these checklists and V7's
+  acceptance evidence. Preserve v1 history but label it clearly; remove stale
+  instructions from the active handoff. Update the test count after changes.
+  Added to the top v2 status section; suite is 188 tests. v1 sections remain
+  under their historical headings.
+- [x] Verify supported opencode versions against the live evidence; adjust
+  declared ranges only when compatibility results justify it. Validated on
+  `@opencode/cli` 2.0.20 with `@opencode/plugin` 2.0.19; `engines.opencode`
+  `>=2` and the declared `^2.0.19` line still hold, so the ranges are
+  unchanged.
+- [x] Run typecheck, the full suite, `canary --load`, and the harness server
+  spike against the intended release host. Verify Windows and Linux CI.
+  Windows (2026-09-29, `2.0.20`): typecheck clean, 188 pass, `canary --load`
+  OK (TUI loaded, version 0.3.0), harness spike OK. Linux (WSL2/Ubuntu,
+  2026-09-30, `2.0.20`, Bun 1.3.3): the same gates plus the local `npm pack`
+  whitelist and the full harness matrix pass, so the `ci.yml`
+  `test`/`canary`/`pack` jobs were reproduced locally instead of left to CI.
+- [x] Pack the package and install that tarball in isolated server/TUI config;
+  confirm both entrypoints, optional peers, and the documented options work.
+  Inspect tarball contents using the existing CI whitelist. `bun pm pack` →
+  `subplug-0.3.0.tgz` (60 KB, 35 files); extracted, `bun install`ed its
+  declared deps, and loaded that copy through `SUBPLUG_HARNESS_PLUGIN`: server
+  spike OK (`features.server`, identity via the `coord`/`storageDir` options)
+  and `--tui` OK (route `subplug`, version 0.3.0). Contents match `ci.yml`'s
+  whitelist (`server.ts`, `tui.tsx`, `src/**`, README, LICENSE, package.json;
+  no `test/` or `scripts/`). Repeated on Linux (2026-09-30): `npm pack` →
+  `subplug-0.3.0.tgz` (35 files), same whitelist, and the extracted artifact
+  loaded both entrypoints through `SUBPLUG_HARNESS_PLUGIN`.
+- [x] Choose the release version, write concise release notes, and record the
+  validated host version. Review/commit the fixes and acceptance evidence,
+  then integrate the branch through the project's normal review process.
+  Chose `0.3.0` (minor: remote attach); notes in `CHANGELOG.md`; validated
+  host `@opencode/cli` 2.0.20. Committed on `v7-remote`; branch integration
+  stays a separate review/merge decision.
+- [ ] Publish only after an explicit release decision; verify the published
+  artifact with the same isolated install smoke check. **Pending an explicit
+  decision**; the packed-artifact smoke above is the check to repeat after
+  publish.
+
+Acceptance: the release artifact loads successfully and all required gates
+pass. Failed gates block release; missing external prerequisites stay pending.
+No additional broad feature development is implied by this checklist.
+Met on Windows (`2.0.20`, 2026-09-29): every gate passes and the packed artifact
+loads both entries. Re-verified on Linux (`2.0.20`, Bun 1.3.3, 2026-09-30):
+every gate passes, the Linux CI jobs were reproduced locally, and the packed
+artifact loads both entries. The publish step remains pending an explicit
+release decision; the artifact and smoke check are prepared.
+
+### Execution order
+
+1. ~~Finish V7.R0 regression coverage and V7.R1 probe work.~~ Done.
+2. ~~Run R1/R2 locally with a configured model; run R3 visual checks.~~
+   R1/R2 done; R3 visual checks still need an interactive terminal.
+3. Run V7.R2 on two devices, sharing event/subagent evidence with R1. The
+   README runbook and the probe timing hardening are ready; the run needs the
+   second device's endpoint and a configured model.
+4. ~~Resolve R4's support boundary and complete R5 release preparation.~~
+   R4 done; R5 done except publish (artifact prepared and smoke-checked on Linux).
+5. Make the separate integration/publish decision when evidence is ready.
+   Current decision (2026-09-30): no merge yet, no publish; artifacts prepared.

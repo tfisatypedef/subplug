@@ -1,5 +1,5 @@
 import type { SessionNode } from "../shared/types.ts"
-import { buildSessionTree, flattenTree } from "../hub/tree.ts"
+import { buildSessionTree, flattenTree, type TreeRow } from "../hub/tree.ts"
 import {
   STATUS_GROUPS,
   SESSION_STATUS,
@@ -85,6 +85,11 @@ export type BuildCenterOptions = {
   search: string
   grouping: Grouping
   state?: CenterState
+  /**
+   * Break subagents out of their parents into a flat list. Only affects the
+   * project grouping; the hierarchy grouping is always a tree.
+   */
+  flat?: boolean
 }
 
 function recencyDesc(a: SessionNode, b: SessionNode): number {
@@ -93,6 +98,17 @@ function recencyDesc(a: SessionNode, b: SessionNode): number {
 
 function searchable(session: SessionNode): string {
   return `${session.title ?? ""} ${session.sessionID} ${session.agent ?? ""} ${session.directory ?? ""}`.toLowerCase()
+}
+
+function treeRowsToTasks(flat: readonly TreeRow[], state: CenterState): TaskRow[] {
+  return flat.map((row) => ({
+    session: row.session,
+    group: groupFor(row.session, state),
+    depth: row.depth,
+    orphan: row.orphan,
+    hasChildren: row.hasChildren,
+    collapsed: row.collapsed,
+  }))
 }
 
 type Bucket = {
@@ -116,17 +132,14 @@ export function buildCenterRows(
 
   if (options.grouping === "hierarchy") {
     const tree = buildSessionTree([...filtered])
-    const flat = flattenTree(tree, state.collapsed)
-    const tasks: TaskRow[] = flat.map((row) => ({
-      session: row.session,
-      group: groupFor(row.session, state),
-      depth: row.depth,
-      orphan: row.orphan,
-      hasChildren: row.hasChildren,
-      collapsed: row.collapsed,
-    }))
+    const tasks = treeRowsToTasks(flattenTree(tree, state.collapsed), state)
     return { rows: tasks.map((task) => ({ kind: "task", task }) as CenterRow), tasks }
   }
+
+  // Project grouping nests each child under its parent (a child shares the
+  // parent's directory). Status/agent grouping stay flat because a child can
+  // sort into a different bucket than its parent.
+  const nestedProject = options.grouping === "project" && !options.flat
 
   const buckets = new Map<string, Bucket>()
   const bucketFor = (session: SessionNode): Bucket => {
@@ -162,6 +175,14 @@ export function buildCenterRows(
   ordered.forEach((bucket, index) => {
     if (index > 0) rows.push({ kind: "gap", key: `gap:${bucket.key}` })
     rows.push({ kind: "group", key: `group:${bucket.key}`, label: bucket.label, count: bucket.tasks.length })
+    if (nestedProject) {
+      const tree = buildSessionTree([...bucket.tasks])
+      for (const task of treeRowsToTasks(flattenTree(tree, state.collapsed), state)) {
+        tasks.push(task)
+        rows.push({ kind: "task", task })
+      }
+      return
+    }
     for (const session of [...bucket.tasks].sort(recencyDesc)) {
       const task: TaskRow = {
         session,

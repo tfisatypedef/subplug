@@ -79,6 +79,9 @@ export function startWebServer(
   source: WebSource,
   options: { port: number },
 ): { port: number; stop: () => void } | { error: string } {
+  if (typeof Bun === "undefined") {
+    return { error: "the web view requires the Bun runtime" }
+  }
   try {
     const server = Bun.serve({
       hostname: "127.0.0.1",
