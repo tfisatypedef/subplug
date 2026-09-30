@@ -16,7 +16,11 @@ Re-verified green on Linux (WSL2/Ubuntu, 2026-09-30, Bun 1.3.3, opencode
 2.0.20): the same gates plus the local `npm pack` whitelist and the full
 harness matrix. Cold-start probe timing races in the late-subscriber live
 delivery and attach message-store hydration were hardened. The V7.R2 runbook is
-in README's "Two-device acceptance (LAN or Tailscale)".
+in README's "Two-device acceptance (LAN or Tailscale)". A two-device attach
+(Windows host over Tailscale, Linux/WSL client) exposed a remote rendering bug:
+the dashboard enumerated only the reactive store, so pre-existing server
+sessions were invisible; remote enumeration now uses `client.session.list()`
+with the store as fallback (`b94919b`, suite 190).
 
 ## Goal
 
@@ -141,7 +145,10 @@ Notes:
   preferred: a `remote` mode in `SubplugTuiOptions` (`src/tui/context.ts`,
   alongside `storageDir`/`hubGroup`) that bypasses the hub.
 - **V7.2 — hub-independent TUI state. DONE (2026-09-29).** Build the dashboard from
-  `ctx.data.session.*` (list/status/cost/family) as the primary source. The hub
+  `ctx.data.session.*` (list/status/cost/family) as the primary source, with
+  `client.session.list()` for enumeration so pre-existing server sessions appear
+  (the reactive store only holds sessions learned about since attaching;
+  `b94919b`). The hub
   cannot be "local enrichment" on a remote attach: `resolvePaths` prefers a local
   `hub.json` pointer (7-day max age, written by a server plugin that ran here)
   and otherwise keys from the *remote* project id (`src/tui/index.tsx`,
@@ -220,19 +227,23 @@ the existing `state()` signal; the dashboard, sidebar and details pane are
 unchanged:
 
 - **local** (default): `readMonitorState(hubDir, repoRoot)` exactly as today.
-- **remote**: synthesize `MonitorState` from `ctx.data` only — no hub read, no
-  backfill, no hub logging, empty `risks`/`recentCommands`/`comms`, and an empty
-  `registry` (claims/verifications/conflicts unavailable).
+- **remote**: synthesize `MonitorState` from the attached server only — no hub
+  read, no backfill, no hub logging, empty `risks`/`recentCommands`/`comms`, and
+  an empty `registry` (claims/verifications/conflicts unavailable). Enumeration
+  uses `client.session.list()` (`listNativeSessions`) because the reactive
+  `ctx.data.session` store only carries sessions the client learned about since
+  attaching; the store is the fallback when the native list is empty. Without
+  this, pre-existing server sessions were invisible (`b94919b`).
 
 Remote `SessionNode` mapping:
 
 | SessionNode | remote source |
 | --- | --- |
-| `sessionID` / `parentID` | `ctx.data.session.list()` `id` / `parentID` |
+| `sessionID` / `parentID` | `client.session.list()` `id` / `parentID`, else `ctx.data.session.list()` |
 | `kind` | `parentID ? "subagent" : "root"` |
 | `title` / `agent` / `model` / `directory` | `SessionInfo` fields (`location.directory`) |
-| `status` | `ctx.data.session.status()`: `running → busy`, `idle → idle`; `retry`/`error` only from events |
-| `cost` | `ctx.data.session.cost(id)` |
+| `status` | `ctx.data.session.status()` (store only): `running → busy`, `idle → idle`, otherwise `unknown` |
+| `cost` | `ctx.data.session.cost(id)`, falling back to the listed `cost` |
 | `lastEventAt` | `time.updated` |
 | `identity` | never — so claims cannot join |
 

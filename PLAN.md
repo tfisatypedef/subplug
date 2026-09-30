@@ -1144,17 +1144,21 @@ the current `v7-remote` checkout. The v2 port and V7 feature implementation
 are present. V7 execution/LAN acceptance is specified in `V7PLAN.md` under
 "Remaining work specification"; its single-machine execution and task-child
 runs pass, but the two-device LAN pass is still pending. R0/R1 review fixes and
-probe work are committed on `v7-remote`; the suite passes 188 tests and
+probe work are committed on `v7-remote`; the suite passes 190 tests and
 `bun run typecheck` is clean.
 
 Linux baseline (WSL2/Ubuntu, 2026-09-30, Bun 1.3.3, opencode 2.0.20,
 `@opencode/plugin` 2.0.19): `bun install --frozen-lockfile`,
-`bun run typecheck`, `bun test` (188 pass), `canary --load`, the local `npm
+`bun run typecheck`, `bun test`, `canary --load`, the local `npm
 pack` whitelist, and the harness matrix (spike, `--tui`, `--probe-tui-state`,
 `--probe-tui-state --attach`, `--probe-replay`, `--demo --keep`, `--inspect`)
 all pass. Two cold-start probe timing races (late-subscriber live delivery and
 attach message-store hydration) were hardened by `8e875bf`; no shipped code
-changed.
+changed. A real two-device attach (Windows host over Tailscale, Linux/WSL
+client) then found a remote rendering bug: the dashboard enumerated only the
+reactive store, so pre-existing server sessions were invisible. Remote
+enumeration now uses `client.session.list()` with the store as fallback
+(`b94919b`), covered by two remote tests; the suite is 190.
 
 ### R1 — live v2 event and subagent contract
 
