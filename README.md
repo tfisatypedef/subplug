@@ -371,14 +371,51 @@ model, and a client that attaches. With a WSL2 client, run the server on the
 second device so the client connects outbound (WSL2's NAT does not accept
 inbound LAN connections without host port forwarding).
 
-On the server device, install subplug and start the server:
+#### Server device setup
+
+The probe requires subplug to be **active on the server**, not just the client
+(`--existing-server` reads `/api/plugin` and fails if the server entry is
+missing). subplug is not on npm yet, so install from the packed tarball:
 
 ```sh
-OPENCODE_PASSWORD=<password> opencode2 serve --hostname 0.0.0.0 --port 4096
+npm install -g @opencode/cli          # verified 2.0.20
+# on the dev machine: npm pack -> subplug-0.3.0.tgz; copy it over, then:
+mkdir -p ~/subplug-pkg
+tar -xzf subplug-0.3.0.tgz -C ~/subplug-pkg --strip-components=1
+(cd ~/subplug-pkg && npm install)
+mkdir -p ~/subplug-server
+cat > ~/subplug-server/opencode.json <<'JSON'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [{ "package": "/home/<user>/subplug-pkg", "options": { "coord": { "injectIdentity": true } } }]
+}
+JSON
+# optional: only needed if you also open a TUI on the server device
+cat > ~/subplug-server/cli.json <<'JSON'
+{
+  "$schema": "https://opencode.ai/v2/cli.json",
+  "plugins": [{ "package": "/home/<user>/subplug-pkg", "options": {} }]
+}
+JSON
+```
+
+Configure a model/provider on the server (e.g. `opencode2 auth login`), then
+start it and allow TCP 4096 through the host firewall:
+
+```sh
+OPENCODE_PASSWORD=<password> OPENCODE_CONFIG_DIR=~/subplug-server \
+  opencode2 serve --hostname 0.0.0.0 --port 4096
+```
+
+Confirm the endpoint from the client before probing:
+
+```sh
+curl -u "opencode:<password>" http://<server-ip>:4096/api/info
 ```
 
 On the client, run the probe against that server twice (execution, then a real
-task child):
+task child). `SUBPLUG_PROBE_MODEL` names a model configured on the **server**,
+because v2 executes server-side:
 
 ```sh
 SUBPLUG_PROBE_SERVER_URL=http://<server-ip>:4096 \
