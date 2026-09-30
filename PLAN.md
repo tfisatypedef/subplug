@@ -1312,7 +1312,9 @@ README; no pipeline added; the web guard is unchanged and still covered by
   spike OK (`features.server`, identity via the `coord`/`storageDir` options)
   and `--tui` OK (route `subplug`, version 0.3.0). Contents match `ci.yml`'s
   whitelist (`server.ts`, `tui.tsx`, `src/**`, README, LICENSE, package.json;
-  no `test/` or `scripts/`).
+  no `test/` or `scripts/`). Repeated on Linux (2026-09-30): `npm pack` →
+  `subplug-0.3.0.tgz` (35 files), same whitelist, and the extracted artifact
+  loaded both entrypoints through `SUBPLUG_HARNESS_PLUGIN`.
 - [x] Choose the release version, write concise release notes, and record the
   validated host version. Review/commit the fixes and acceptance evidence,
   then integrate the branch through the project's normal review process.
@@ -1328,15 +1330,20 @@ Acceptance: the release artifact loads successfully and all required gates
 pass. Failed gates block release; missing external prerequisites stay pending.
 No additional broad feature development is implied by this checklist.
 Met on Windows (`2.0.20`, 2026-09-29): every gate passes and the packed artifact
-loads both entries. The publish step and the Linux CI run remain pending
-(external decisions/environments).
+loads both entries. Re-verified on Linux (`2.0.20`, Bun 1.3.3, 2026-09-30):
+every gate passes, the Linux CI jobs were reproduced locally, and the packed
+artifact loads both entries. The publish step remains pending an explicit
+release decision; the artifact and smoke check are prepared.
 
 ### Execution order
 
 1. ~~Finish V7.R0 regression coverage and V7.R1 probe work.~~ Done.
 2. ~~Run R1/R2 locally with a configured model; run R3 visual checks.~~
    R1/R2 done; R3 visual checks still need an interactive terminal.
-3. Run V7.R2 on two devices, sharing event/subagent evidence with R1.
+3. Run V7.R2 on two devices, sharing event/subagent evidence with R1. The
+   README runbook and the probe timing hardening are ready; the run needs the
+   second device's endpoint and a configured model.
 4. ~~Resolve R4's support boundary and complete R5 release preparation.~~
-   R4 done; R5 done except publish.
+   R4 done; R5 done except publish (artifact prepared and smoke-checked on Linux).
 5. Make the separate integration/publish decision when evidence is ready.
+   Current decision (2026-09-30): no merge yet, no publish; artifacts prepared.
