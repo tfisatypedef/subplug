@@ -8,7 +8,7 @@ to read-only + comms with a hub-free remote. Supersedes the earlier standalone
 `subplug-v2` draft, which wrongly proposed a new plugin. subplug is **already a
 v2 plugin**; V7 is a delta on its `v2` branch, checked out in
 `C:\Users\weaka\opsesh` (`v7-remote`, based on `origin/v2`). Gates green on
-Windows (2026-09-29): `bun run typecheck`, `bun test` (186 pass / 0 fail),
+Windows (2026-09-29): `bun run typecheck`, `bun test` (188 pass / 0 fail),
 `bun run canary`, and harness `spike` / `--tui` /
 `--probe-tui-state [--attach] [--probe-execute] [--probe-task]` /
 `--demo` / `--inspect`.
@@ -251,8 +251,10 @@ overrides the heuristic.
 This section is the current V7 completion checklist. V7.1–V7.5 feature code
 is implemented; the LAN acceptance has not been performed. The older probe
 results establish hydration and prompt admission, not model execution or
-event latency. The R0 tests and probe changes pass typecheck and 186 tests,
-but are still uncommitted at the time this section was written.
+event latency. V7.R0 and V7.R1 are committed on `v7-remote`; the suite passes
+188 tests with `bun run typecheck` clean. Single-machine execution and
+task-child acceptance pass on `2.0.20` (see V7.R1 below); the two-device LAN
+run remains pending.
 
 ### V7.R0 — review fixes and regression coverage
 
@@ -262,7 +264,8 @@ comparison; session-detail polling is cleared on disposal and late responses
 cannot update a disposed view or a different selected session.
 
 - [x] Failed-status and IPv6-loopback checks in `test/remote.test.ts`.
-- [x] Typecheck and full suite: 186 pass, 0 fail.
+- [x] Typecheck and full suite: 188 pass, 0 fail (186 at R0; 2 backfill
+  edge-case tests added in PLAN R2).
 - [x] Add a focused lifecycle test that closes a detail view, verifies no
   subsequent transcript polling, and resolves an in-flight load after closing.
 - [x] Exercise an unknown remote status through the composer: cancellation

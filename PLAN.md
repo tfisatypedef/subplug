@@ -1133,7 +1133,7 @@ the current `v7-remote` checkout. The v2 port and V7 feature implementation
 are present. V7 execution/LAN acceptance is specified in `V7PLAN.md` under
 "Remaining work specification"; its single-machine execution and task-child
 runs pass, but the two-device LAN pass is still pending. R0/R1 review fixes and
-probe work are committed on `v7-remote`; the suite passes 186 tests and
+probe work are committed on `v7-remote`; the suite passes 188 tests and
 `bun run typecheck` is clean.
 
 ### R1 — live v2 event and subagent contract
