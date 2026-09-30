@@ -10,6 +10,9 @@ import type { EventRecord } from "../src/shared/types.ts"
 import { resolveOpencodeBin } from "./opencode-bin.ts"
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..")
+// Load a packed/extracted copy instead of the repo when set; used by the
+// packed-artifact smoke check so the shipped file set is what gets loaded.
+const pluginDir = process.env.SUBPLUG_HARNESS_PLUGIN ?? root
 // Keep the workspace outside the plugin repo: v2 watches local plugin sources,
 // and harness state writes inside the repo would retrigger plugin reloads.
 const harnessDir = process.env.SUBPLUG_HARNESS_DIR ?? join(tmpdir(), "subplug-harness")
@@ -97,7 +100,7 @@ function writeConfig(extraPlugins: unknown[] = []): void {
       question: "deny",
     },
     plugins: [
-      { package: root, options: { coord: { injectIdentity: true }, storageDir: stateDir } },
+      { package: pluginDir, options: { coord: { injectIdentity: true }, storageDir: stateDir } },
       ...extraPlugins,
     ],
   }
@@ -106,7 +109,7 @@ function writeConfig(extraPlugins: unknown[] = []): void {
   // reach it from opencode.json.
   const cliConfig = {
     $schema: "https://opencode.ai/v2/cli.json",
-    plugins: [{ package: root, options: { storageDir: stateDir } }, ...extraPlugins],
+    plugins: [{ package: pluginDir, options: { storageDir: stateDir } }, ...extraPlugins],
   }
   writeFileSync(join(configDir, "cli.json"), JSON.stringify(cliConfig, null, 2))
 }

@@ -27,11 +27,21 @@ child links, agent names, and models even if creation events were missed.
 
 ## OpenCode v2 migration (branch `v2`) — plan
 
-Status: **v2 port complete (V0–V6 done, 2026-09-29); branch ready to merge.**
-This section describes this branch. The v1 sections below describe `main` (the
+Status: **v2 port complete (V0–V6 done, 2026-09-29); V7 remote attach
+implemented on `v7-remote`; branch ready to merge.** This section describes this
+branch. The v1 sections below describe `main` (the
 shipped 1.18 plugin) and stay as the historical reference. Development ran
-against `@opencode/cli@dev` (`0.0.0-dev-20288`, 2026-09-29); see the V0–V6
-results sections.
+against `@opencode/cli@dev` (`0.0.0-dev-20288`, 2026-09-29) and the release
+host `@opencode/cli` `2.0.20`; see the V0–V6 results sections.
+
+Current status (2026-09-29): the v2 port (V0–V6) and the V7 remote-attach
+feature are implemented. `v7-remote` adds hub-free remote render/actions
+(V7.1–V7.5) plus review fixes (V7.R0) and probes (V7.R1) whose single-machine
+execution and task-child runs pass on `2.0.20`; PLAN R1, R2 and R4 are done.
+Remaining: V7.R2 two-device LAN acceptance (needs a second device), PLAN R3
+visual checks (needs an interactive terminal), and PLAN R5 release
+preparation. See "Current remaining work specification" at the end of this
+file and `V7PLAN.md`.
 
 Scope: port subplug to opencode **2.x only** — server plugin plus CLI/TUI plugin.
 No dual `server()`/`setup()` package; v1 support remains on `main`. Reference
@@ -1263,30 +1273,55 @@ README; no pipeline added; the web guard is unchanged and still covered by
 
 ### R5 — documentation reconciliation and release
 
-- [ ] Add a current-status summary pointing to these checklists and V7's
+- [x] Add a current-status summary pointing to these checklists and V7's
   acceptance evidence. Preserve v1 history but label it clearly; remove stale
   instructions from the active handoff. Update the test count after changes.
-- [ ] Verify supported opencode versions against the live evidence; adjust
-  declared ranges only when compatibility results justify it.
-- [ ] Run typecheck, the full suite, `canary --load`, and the harness server
+  Added to the top v2 status section; suite is 188 tests. v1 sections remain
+  under their historical headings.
+- [x] Verify supported opencode versions against the live evidence; adjust
+  declared ranges only when compatibility results justify it. Validated on
+  `@opencode/cli` 2.0.20 with `@opencode/plugin` 2.0.19; `engines.opencode`
+  `>=2` and the declared `^2.0.19` line still hold, so the ranges are
+  unchanged.
+- [x] Run typecheck, the full suite, `canary --load`, and the harness server
   spike against the intended release host. Verify Windows and Linux CI.
-- [ ] Pack the package and install that tarball in isolated server/TUI config;
+  Windows (2026-09-29, `2.0.20`): typecheck clean, 188 pass, `canary --load`
+  OK (TUI loaded, version 0.3.0), harness spike OK. Linux runs the existing
+  `ci.yml` `test`/`canary`/`pack` jobs on push and PR; it cannot be executed on
+  the Windows dev host and is left to CI.
+- [x] Pack the package and install that tarball in isolated server/TUI config;
   confirm both entrypoints, optional peers, and the documented options work.
-  Inspect tarball contents using the existing CI whitelist.
-- [ ] Choose the release version, write concise release notes, and record the
+  Inspect tarball contents using the existing CI whitelist. `bun pm pack` →
+  `subplug-0.3.0.tgz` (60 KB, 35 files); extracted, `bun install`ed its
+  declared deps, and loaded that copy through `SUBPLUG_HARNESS_PLUGIN`: server
+  spike OK (`features.server`, identity via the `coord`/`storageDir` options)
+  and `--tui` OK (route `subplug`, version 0.3.0). Contents match `ci.yml`'s
+  whitelist (`server.ts`, `tui.tsx`, `src/**`, README, LICENSE, package.json;
+  no `test/` or `scripts/`).
+- [x] Choose the release version, write concise release notes, and record the
   validated host version. Review/commit the fixes and acceptance evidence,
   then integrate the branch through the project's normal review process.
+  Chose `0.3.0` (minor: remote attach); notes in `CHANGELOG.md`; validated
+  host `@opencode/cli` 2.0.20. Committed on `v7-remote`; branch integration
+  stays a separate review/merge decision.
 - [ ] Publish only after an explicit release decision; verify the published
-  artifact with the same isolated install smoke check.
+  artifact with the same isolated install smoke check. **Pending an explicit
+  decision**; the packed-artifact smoke above is the check to repeat after
+  publish.
 
 Acceptance: the release artifact loads successfully and all required gates
 pass. Failed gates block release; missing external prerequisites stay pending.
 No additional broad feature development is implied by this checklist.
+Met on Windows (`2.0.20`, 2026-09-29): every gate passes and the packed artifact
+loads both entries. The publish step and the Linux CI run remain pending
+(external decisions/environments).
 
 ### Execution order
 
-1. Finish V7.R0 regression coverage and V7.R1 probe work.
-2. Run R1/R2 locally with a configured model; run R3 visual checks.
+1. ~~Finish V7.R0 regression coverage and V7.R1 probe work.~~ Done.
+2. ~~Run R1/R2 locally with a configured model; run R3 visual checks.~~
+   R1/R2 done; R3 visual checks still need an interactive terminal.
 3. Run V7.R2 on two devices, sharing event/subagent evidence with R1.
-4. Resolve R4's support boundary and complete R5 release preparation.
+4. ~~Resolve R4's support boundary and complete R5 release preparation.~~
+   R4 done; R5 done except publish.
 5. Make the separate integration/publish decision when evidence is ready.

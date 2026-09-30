@@ -333,7 +333,9 @@ The harness resolves the host from `OPENCODE_BIN`, then `opencode2`, then
 `opencode`, so a v1 `opencode` on `PATH` does not shadow the v2 build. Each run
 uses a random port and an isolated XDG tree under
 `${SUBPLUG_HARNESS_DIR:-$TMPDIR/subplug-harness}`, so it never touches your real
-opencode state. `--keep` leaves the scratch dir behind. The workspace lives
+opencode state. `--keep` leaves the scratch dir behind.
+`SUBPLUG_HARNESS_PLUGIN=<dir>` loads that plugin directory instead of the repo,
+which is how the packed artifact is smoke-tested. The workspace lives
 outside the repo on purpose: opencode watches local plugin sources, so state
 writes inside the repo would retrigger plugin reloads.
 
@@ -368,6 +370,11 @@ Before publishing, run `bun run canary --load` against the v2 host, bump
 `server.ts`, `tui.tsx`, `src`, `README.md`, and `LICENSE`). CI verifies the
 tarball in the `pack` job and runs `canary --load` against `@opencode/cli@dev`
 in the `canary` job.
+
+Validated release: `0.3.0` against `@opencode/cli` 2.0.20 / `@opencode/plugin`
+2.0.19 (Windows, 2026-09-29). To smoke-test a packed artifact locally, extract
+the tarball, `bun install` its declared deps, and point the harness at it with
+`SUBPLUG_HARNESS_PLUGIN=<extracted-package-dir>` for the spike and `--tui`.
 
 ## Manual verification
 
