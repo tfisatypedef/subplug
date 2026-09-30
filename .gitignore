@@ -5,6 +5,3 @@ node_modules/
 .harness/
 .DS_Store
 Thumbs.db
-# Planning docs stay local, not in the public repo.
-PLAN.md
-V7PLAN.md
