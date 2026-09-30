@@ -311,7 +311,10 @@ export default Plugin.define({
 
             const rootSample = sampleSession(ctx, rootID)
             const taskChildSample = taskChildID ? sampleSession(ctx, taskChildID) : undefined
-            const folded = taskChildID ? hubNode(taskChildID, ctx.location?.directory) : undefined
+            // A hub-free remote client has no local hub to fold into, so the
+            // fold check only applies to a same-machine run. The live parent
+            // link is the remote equivalent.
+            const folded = !remote && taskChildID ? hubNode(taskChildID, ctx.location?.directory) : undefined
             result = {
               remote,
               locationAvailable: Boolean(ctx.location?.directory),
@@ -321,6 +324,7 @@ export default Plugin.define({
               taskChildID,
               parentMatches: Boolean(taskChildID && taskChildSample?.parentID === rootID),
               hubNode: folded,
+              hubFoldSkipped: remote,
               storeMessages,
               admittedID: admitted?.id,
               promptAt,
@@ -331,11 +335,13 @@ export default Plugin.define({
             if (!admitted?.id) errors.push("task prompt admission did not return a message id")
             if (!taskChildID) errors.push("no task-created child session observed")
             if (taskChildID && taskChildSample?.parentID !== rootID) errors.push("task child parentID did not match the root")
-            if (!folded || folded.found === false) errors.push("task child was not folded into the hub")
-            else {
-              if (folded.kind !== "subagent") errors.push("folded task child kind is not subagent")
-              if (folded.parentID !== rootID) errors.push("folded task child lost its parent link")
-              if (!folded.identity) errors.push("folded task child has no coordination identity")
+            if (!remote) {
+              if (!folded || folded.found === false) errors.push("task child was not folded into the hub")
+              else {
+                if (folded.kind !== "subagent") errors.push("folded task child kind is not subagent")
+                if (folded.parentID !== rootID) errors.push("folded task child lost its parent link")
+                if (!folded.identity) errors.push("folded task child has no coordination identity")
+              }
             }
           }
         } else {
