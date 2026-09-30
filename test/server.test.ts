@@ -84,12 +84,9 @@ function hubEvents(stateDir: string, group = PROJECT_ID): EventRecord[] {
 async function startPlugin(
   repo: string,
   stateDir: string,
-  options: { injectIdentity?: boolean; hubGroup?: string } = {},
+  options: { hubGroup?: string } = {},
 ): Promise<V2Fake> {
-  const pluginOptions: Record<string, unknown> = {
-    coord: { injectIdentity: options.injectIdentity ?? true },
-    storageDir: stateDir,
-  }
+  const pluginOptions: Record<string, unknown> = { storageDir: stateDir }
   if (options.hubGroup) pluginOptions.hubGroup = options.hubGroup
   const fake = makeV2Context(pluginOptions, repo, PROJECT_ID)
   const stop = await setupServer(fake.ctx)
@@ -106,17 +103,15 @@ function stage(repo: string): void {
 describe("v2 server options", () => {
   test("resolves defaults and nested overrides", () => {
     const defaults = resolveOptions(undefined)
-    expect(defaults.injectIdentity).toBe(false)
     expect(defaults.injectComms).toBe(true)
     expect(defaults.maxAgeMs).toBe(24 * 60 * 60 * 1000)
     expect(defaults.web).toEqual({ enabled: false, port: 7690, token: undefined })
 
     const override = resolveOptions({
-      coord: { injectIdentity: true, hubGroup: "shared", storageDir: "/tmp/hub", retentionBytes: 2048, maxAgeMs: 60_000 },
+      coord: { hubGroup: "shared", storageDir: "/tmp/hub", retentionBytes: 2048, maxAgeMs: 60_000 },
       web: { enabled: true, port: 1234, token: "secret" },
     })
     expect(override).toEqual({
-      injectIdentity: true,
       injectComms: true,
       hubGroup: "shared",
       storageDir: "/tmp/hub",
@@ -228,7 +223,7 @@ describe("v2 server shell", () => {
   test("exposes the plugin id and writes a server.start marker", async () => {
     const repo = seedRepo([], undefined, false)
     const stateDir = tempDir("state-")
-    const fake = await startPlugin(repo, stateDir, { injectIdentity: false })
+    const fake = await startPlugin(repo, stateDir)
     const events = hubEvents(stateDir)
     expect(server.id).toBe("subplug")
     expect(serverModule.id).toBe("subplug")
@@ -241,7 +236,7 @@ describe("v2 server shell", () => {
   test("folds live events into the hub and stops after cleanup", async () => {
     const repo = seedRepo([], undefined, false)
     const stateDir = tempDir("state-")
-    const fake = await startPlugin(repo, stateDir, { injectIdentity: false })
+    const fake = await startPlugin(repo, stateDir)
 
     fake.stream.push("session.created", { sessionID: "ses_root", location: { directory: repo }, title: "root" })
     fake.stream.push("session.created", { sessionID: "ses_child", parentID: "ses_root", location: { directory: repo } })
@@ -273,7 +268,7 @@ describe("v2 server shell", () => {
   test("uses the hubGroup override for the hub directory", async () => {
     const repo = seedRepo([], undefined, false)
     const stateDir = tempDir("state-")
-    await startPlugin(repo, stateDir, { hubGroup: "shared-swarm", injectIdentity: false })
+    await startPlugin(repo, stateDir, { hubGroup: "shared-swarm" })
     expect(hubEvents(stateDir, "shared-swarm").length).toBeGreaterThan(0)
     expect(hubEvents(stateDir).length).toBe(0)
   })
@@ -283,7 +278,7 @@ describe("v2 server shell", () => {
     const stateDir = tempDir("state-")
     const port = 4300 + Math.floor(Math.random() * 500)
     const fake = makeV2Context(
-      { coord: { injectIdentity: false }, storageDir: stateDir, web: { enabled: true, port } },
+      { storageDir: stateDir, web: { enabled: true, port } },
       repo,
       PROJECT_ID,
     )
@@ -317,7 +312,7 @@ describe("v2 server shell", () => {
     process.env.XDG_STATE_HOME = xdg
     try {
       const repo = seedRepo([], undefined, false)
-      const fake = makeV2Context({ coord: { injectIdentity: false } }, repo, PROJECT_ID)
+      const fake = makeV2Context({}, repo, PROJECT_ID)
       const stop = await setupServer(fake.ctx)
       cleanups.push(stop)
       expect(readEventRecords(hubRoot(fallbackStateDir(), PROJECT_ID)).length).toBeGreaterThan(0)
@@ -412,14 +407,16 @@ describe("v2 server coverage risk", () => {
     expect(hubEvents(stateDir).some((event) => event.kind === "command")).toBe(true)
   })
 
-  test("keeps coverage risk active when the injectIdentity option is disabled", async () => {
+  test("records coverage risk and prefixes the command in a coordination repo", async () => {
     const repo = seedRepo(["covered.txt"], "ses_roottest00004")
     const stateDir = tempDir("state-")
-    const fake = await startPlugin(repo, stateDir, { injectIdentity: false })
+    const fake = await startPlugin(repo, stateDir)
     stage(repo)
 
-    await fake.runToolBefore({ tool: "bash", sessionID: "ses_roottest00004", input: { command: 'git commit -m "test"' } })
+    const input: Record<string, unknown> = { command: 'git commit -m "test"' }
+    await fake.runToolBefore({ tool: "bash", sessionID: "ses_roottest00004", input })
 
+    expect(input.command).toBe(`export COORD_AGENT_ID='${identity()}/ses_roottest00004'; git commit -m "test"`)
     const risks = hubEvents(stateDir).filter((event) => event.kind === "command.risk")
     expect(risks.length).toBe(1)
     expect(risks[0]?.refs?.uncovered).toBe(1)
@@ -430,7 +427,7 @@ describe("v2 server swarm_status detail", () => {
   test("returns session detail and gates messages behind the messages arg", async () => {
     const repo = seedRepo([], undefined, false)
     const stateDir = tempDir("state-")
-    const fake = await startPlugin(repo, stateDir, { injectIdentity: false })
+    const fake = await startPlugin(repo, stateDir)
     fake.stream.push("session.created", {
       sessionID: "ses_detail0000001",
       location: { directory: repo },
@@ -465,7 +462,7 @@ describe("v2 server swarm_status detail", () => {
   test("falls back to a native session lookup for unknown hub entries", async () => {
     const repo = seedRepo([], undefined, false)
     const stateDir = tempDir("state-")
-    const fake = await startPlugin(repo, stateDir, { injectIdentity: false })
+    const fake = await startPlugin(repo, stateDir)
     fake.sessionInfo.set("ses_liveonly0001", {
       id: "ses_liveonly0001",
       title: "live only",
@@ -479,7 +476,7 @@ describe("v2 server swarm_status detail", () => {
   test("reports unknown sessions without failing", async () => {
     const repo = seedRepo([], undefined, false)
     const stateDir = tempDir("state-")
-    const fake = await startPlugin(repo, stateDir, { injectIdentity: false })
+    const fake = await startPlugin(repo, stateDir)
     const result = await fake.tools.get("swarm_status")!.execute({ session: "ses_missing" }, {})
     expect(result.content).toContain("no session matching")
   })
@@ -487,7 +484,7 @@ describe("v2 server swarm_status detail", () => {
   test("renders the session tree with rollups and orphan markers", async () => {
     const repo = seedRepo([], undefined, false)
     const stateDir = tempDir("state-")
-    const fake = await startPlugin(repo, stateDir, { injectIdentity: false })
+    const fake = await startPlugin(repo, stateDir)
     fake.stream.push("session.created", { sessionID: "ses_treeroot00001", location: { directory: repo }, title: "tree root" })
     fake.stream.push("session.created", {
       sessionID: "ses_treechild001",
@@ -521,7 +518,7 @@ describe("v2 server swarm_send", () => {
   test("prompts an idle target with steer delivery and records a pointer", async () => {
     const repo = seedRepo([], undefined, false)
     const stateDir = tempDir("state-")
-    const fake = await startPlugin(repo, stateDir, { injectIdentity: false })
+    const fake = await startPlugin(repo, stateDir)
     fake.stream.push("session.created", {
       sessionID: "ses_sendidle00001",
       location: { directory: repo },
@@ -555,7 +552,7 @@ describe("v2 server swarm_send", () => {
   test("refuses a busy target without confirm and queues with confirm", async () => {
     const repo = seedRepo([], undefined, false)
     const stateDir = tempDir("state-")
-    const fake = await startPlugin(repo, stateDir, { injectIdentity: false })
+    const fake = await startPlugin(repo, stateDir)
     fake.stream.push("session.created", {
       sessionID: "ses_sendbusy00001",
       location: { directory: repo },
@@ -585,7 +582,7 @@ describe("v2 server swarm_send", () => {
   test("pulls the caller inbox and marks pointers seen", async () => {
     const repo = seedRepo([], undefined, false)
     const stateDir = tempDir("state-")
-    const fake = await startPlugin(repo, stateDir, { injectIdentity: false })
+    const fake = await startPlugin(repo, stateDir)
     fake.stream.push("session.created", {
       sessionID: "ses_inboxtarget01",
       location: { directory: repo },
@@ -613,7 +610,7 @@ describe("v2 server swarm_send", () => {
   test("reports unknown and ambiguous targets without sending", async () => {
     const repo = seedRepo([], undefined, false)
     const stateDir = tempDir("state-")
-    const fake = await startPlugin(repo, stateDir, { injectIdentity: false })
+    const fake = await startPlugin(repo, stateDir)
     fake.stream.push("session.created", { sessionID: "ses_amb000000001", location: { directory: repo } })
     fake.stream.push("session.created", { sessionID: "ses_amb000000002", location: { directory: repo } })
     expect(
@@ -639,7 +636,7 @@ describe("v2 server comms injection", () => {
   test("injects pending inbox into the next prompt and marks delivered", async () => {
     const repo = seedRepo([], undefined, false)
     const stateDir = tempDir("state-")
-    const fake = await startPlugin(repo, stateDir, { injectIdentity: false })
+    const fake = await startPlugin(repo, stateDir)
     fake.stream.push("session.created", {
       sessionID: "ses_injecttarget1",
       location: { directory: repo },
@@ -669,7 +666,7 @@ describe("v2 server comms injection", () => {
   test("tails comms written to the hub after bootstrap", async () => {
     const repo = seedRepo([], undefined, false)
     const stateDir = tempDir("state-")
-    const fake = await startPlugin(repo, stateDir, { injectIdentity: false })
+    const fake = await startPlugin(repo, stateDir)
     expect(await waitFor(() => hubEvents(stateDir).some((event) => event.kind === "server.start"))).toBe(true)
 
     const other = new EventLog(hubRoot(stateDir, PROJECT_ID), "other-server")
@@ -697,7 +694,7 @@ describe("v2 server comms injection", () => {
   test("is a no-op with an empty inbox", async () => {
     const repo = seedRepo([], undefined, false)
     const stateDir = tempDir("state-")
-    const fake = await startPlugin(repo, stateDir, { injectIdentity: false })
+    const fake = await startPlugin(repo, stateDir)
     const event = { sessionID: "ses_nobody", prompt: { text: "hi" } }
     await fake.runPromptHook(event)
     expect(event.prompt.text).toBe("hi")

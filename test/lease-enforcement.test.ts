@@ -81,7 +81,7 @@ function leaseCalls(repo: string): Array<{ agent: string; session: string; paths
 }
 
 async function startPlugin(repo: string, stateDir: string): Promise<V2Fake> {
-  const fake = makeV2Context({ coord: { injectIdentity: true }, storageDir: stateDir }, repo, PROJECT_ID)
+  const fake = makeV2Context({ storageDir: stateDir }, repo, PROJECT_ID)
   const stop = await setupServer(fake.ctx)
   cleanups.push(stop)
   return fake

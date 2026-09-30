@@ -98,7 +98,6 @@ export type ServerContext = {
 }
 
 export type SubplugOptions = {
-  injectIdentity: boolean
   injectComms: boolean
   storageDir?: string
   hubGroup?: string
@@ -142,10 +141,8 @@ export function resolveOptions(options?: unknown): SubplugOptions {
   const coord = asRecord(root.coord)
   const comms = asRecord(root.comms)
   const web = asRecord(root.web)
-  const envInject = toBool(process.env.SUBPLUG_INJECT_IDENTITY, false)
   const envStorage = toStringValue(process.env.SUBPLUG_STORAGE_DIR)
   return {
-    injectIdentity: toBool(coord.injectIdentity, toBool(root.injectIdentity, envInject)),
     injectComms: toBool(comms.inject, toBool(root.injectComms, true)),
     storageDir: toStringValue(coord.storageDir) ?? toStringValue(root.storageDir) ?? envStorage,
     hubGroup:

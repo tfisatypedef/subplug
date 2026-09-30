@@ -101,7 +101,7 @@ function writeConfig(extraPlugins: unknown[] = []): void {
       question: "deny",
     },
     plugins: [
-      { package: pluginDir, options: { coord: { injectIdentity: true }, storageDir: stateDir } },
+      { package: pluginDir, options: { storageDir: stateDir } },
       ...extraPlugins,
     ],
   }
